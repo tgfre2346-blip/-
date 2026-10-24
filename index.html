@@ -1,0 +1,3699 @@
+<!DOCTYPE html>
+<!--
+  ============================================================
+  골프 스윙 분석기 · 설치형 웹앱(PWA) (swing-app/index.html)
+  ------------------------------------------------------------
+  - 휴대폰판(swing-analyzer-mobile.html)과 기능·화면이 같고, 휴대폰 홈 화면에
+    "앱"처럼 설치해서 쓸 수 있게 만든 판입니다.
+  - 폴더 구성
+    · index.html           : 이 파일 (앱 화면과 동작)
+    · manifest.webmanifest : 앱 이름·아이콘·색 정보 (설치할 때 휴대폰이 읽음)
+    · sw.js                : 서비스 워커 (한 번 연 파일을 저장해 두어 인터넷 없이도 열리게 함)
+    · mediapipe/           : 자세 추정 라이브러리 MediaPipe 0.10.14 (jsDelivr 에서 받은 원본 그대로)
+    · models/              : 자세 추정 모델 (Google 이 공개한 원본 그대로)
+    · icons/               : 앱 아이콘
+  - 이 폴더 전체를 https 주소가 있는 곳(예: GitHub Pages)에 올린 뒤 휴대폰으로 열어 설치합니다.
+  - 처음 한 번은 인터넷이 필요하고, 그 뒤로는 인터넷 없이도 열리고 분석됩니다.
+  - 내 스윙 영상은 서버로 보내지 않습니다. 휴대폰 안에서만 재생·분석됩니다.
+  - 스윙 기록은 이 휴대폰의 앱 저장소(localStorage)에 저장됩니다.
+  ============================================================
+-->
+<html lang="ko">
+<head>
+<!-- 한글이 깨지지 않도록 문자 인코딩을 UTF-8로 지정 -->
+<meta charset="UTF-8">
+<!-- 휴대폰 화면 크기에 맞게 보이도록 설정 (노치 화면까지 꽉 차게) -->
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<!-- 휴대폰 브라우저 위쪽 막대 색 (초록) -->
+<meta name="theme-color" content="#14532d">
+<title>골프 스윙 분석기</title>
+
+<!-- 앱 설치 정보: 이름·아이콘·전체 화면 등 (manifest.webmanifest 에 적혀 있음) -->
+<link rel="manifest" href="manifest.webmanifest">
+<!-- 아이폰 홈 화면 아이콘과 앱 모드 설정 -->
+<link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="스윙 분석">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<link rel="icon" type="image/png" sizes="192x192" href="icons/icon-192.png">
+
+<!-- 글꼴: 구글 폰트의 "Noto Sans KR" (못 받으면 기기 기본 한글 글꼴로 표시됨) -->
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@400;500;700&display=swap" rel="stylesheet">
+
+<!-- ===================== CSS: 화면 꾸미기 ===================== -->
+<style>
+  /* 배치: 한 줄로 쌓이는 카드들 (휴대폰은 1열, 넓은 화면은 가운데 정렬)
+     ── 색상표 (변수) ──
+     여기 값만 바꾸면 화면 전체 색이 같이 바뀝니다. 메인 색은 초록 계열.
+     밝은 화면 값을 먼저 적고, 아래 두 곳에서 어두운 화면(다크 모드) 값을 다시 정합니다. */
+  :root {
+    --green-900: #0f3d22;   /* 가장 진한 초록 (제목 글자) */
+    --green-700: #1a6b3c;   /* 메인 초록 (버튼) */
+    --green-600: #228049;   /* 버튼을 눌렀을 때 */
+    --green-100: #e4f2e8;   /* 연한 초록 (표 머리, 보조 버튼) */
+    --green-150: #d3eadb;   /* 보조 버튼 눌렀을 때 */
+    --green-50:  #f3f8f4;   /* 아주 연한 초록 (페이지 배경) */
+    --card:      #ffffff;   /* 카드 · 입력칸 바탕 */
+    --line:      #e1e9e3;   /* 얇은 테두리선 */
+    --field-line:#cfdcd3;   /* 입력칸 테두리 */
+    --text:      #1f2a22;   /* 기본 글자 */
+    --text-soft: #5f6f64;   /* 설명 글자 */
+    --muted:     #8f9d94;   /* 흐린 글자 */
+    --on-accent: #ffffff;   /* 초록 버튼 위 글자 */
+    --red:       #c8463a;   /* 삭제 버튼 */
+    --red-soft:  #fdecea;   /* 오류 알림 바탕 */
+    --red-text:  #a8382e;   /* 오류 알림 글자 */
+    --disabled:  #c9d8ce;   /* 누를 수 없는 버튼 */
+    --row-hover: #f7fbf8;   /* 표 줄 강조 */
+    --row-current:#eef8f1;  /* 지금 보고 있는 구간 줄 */
+    --notice-bg: #fffaeb;   /* 노란 안내 상자 */
+    --notice-line:#f3e2a9;
+    --notice-bar:#e0b43a;
+    --notice-text:#4a3f1c;
+    --status-bg: #f2f5f3;   /* 상태 표시줄 */
+    --good-bg: #dcf3e3; --good-text: #17663a;   /* 배지: 양호 */
+    --warn-bg: #fde9d7; --warn-text: #a84a0c;   /* 배지: 주의 */
+    --na-bg:   #eef0ef; --na-text:   #6f7b73;   /* 배지: 판단 불가 */
+    --mid-text: #a87a00;                         /* 정확도: 보통 */
+    --hero-a: #14532d; --hero-b: #1f7a44; --hero-c: #2f9a5a; /* 제목 띠 그라데이션 */
+    --shadow: rgba(15, 61, 34, 0.06);
+    --focus-ring: rgba(26, 107, 60, 0.22);
+    --select-arrow: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8'%3E%3Cpath d='M1 1l5 5 5-5' fill='none' stroke='%231a6b3c' stroke-width='2' stroke-linecap='round'/%3E%3C/svg%3E");
+    --radius: 14px;         /* 카드 모서리 둥글기 */
+  }
+  /* 어두운 화면: 휴대폰이 다크 모드일 때 (사용자가 밝은 화면을 직접 고르지 않았다면) */
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --green-900: #cfeedd; --green-700: #3fae6c; --green-600: #52c07e;
+      --green-100: #1d3a28; --green-150: #24472f; --green-50: #0e1712;
+      --card: #16211a; --line: #26352b; --field-line: #34473a;
+      --text: #e3ece6; --text-soft: #a3b4a9; --muted: #7d8d83; --on-accent: #08130c;
+      --red: #e0675b; --red-soft: #3a1d1a; --red-text: #f19b91;
+      --disabled: #2c3a31; --row-hover: #1b2820; --row-current: #1e3326;
+      --notice-bg: #2a2412; --notice-line: #4a3f1c; --notice-bar: #c9a03a; --notice-text: #eadcae;
+      --status-bg: #1c2720;
+      --good-bg: #1d3a28; --good-text: #8fdcab; --warn-bg: #3d2614; --warn-text: #f3b07a;
+      --na-bg: #222c25; --na-text: #9aa79f; --mid-text: #e1bd55;
+      --hero-a: #0f3d22; --hero-b: #17603a; --hero-c: #1f7a44;
+      --shadow: rgba(0, 0, 0, 0.3); --focus-ring: rgba(63, 174, 108, 0.35);
+      --select-arrow: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8'%3E%3Cpath d='M1 1l5 5 5-5' fill='none' stroke='%233fae6c' stroke-width='2' stroke-linecap='round'/%3E%3C/svg%3E");
+      color-scheme: dark;
+    }
+  }
+  /* 어두운 화면: 사용자가 직접 다크 모드를 골랐을 때 (위와 같은 값) */
+  :root[data-theme="dark"] {
+    --green-900: #cfeedd; --green-700: #3fae6c; --green-600: #52c07e;
+    --green-100: #1d3a28; --green-150: #24472f; --green-50: #0e1712;
+    --card: #16211a; --line: #26352b; --field-line: #34473a;
+    --text: #e3ece6; --text-soft: #a3b4a9; --muted: #7d8d83; --on-accent: #08130c;
+    --red: #e0675b; --red-soft: #3a1d1a; --red-text: #f19b91;
+    --disabled: #2c3a31; --row-hover: #1b2820; --row-current: #1e3326;
+    --notice-bg: #2a2412; --notice-line: #4a3f1c; --notice-bar: #c9a03a; --notice-text: #eadcae;
+    --status-bg: #1c2720;
+    --good-bg: #1d3a28; --good-text: #8fdcab; --warn-bg: #3d2614; --warn-text: #f3b07a;
+    --na-bg: #222c25; --na-text: #9aa79f; --mid-text: #e1bd55;
+    --hero-a: #0f3d22; --hero-b: #17603a; --hero-c: #1f7a44;
+    --shadow: rgba(0, 0, 0, 0.3); --focus-ring: rgba(63, 174, 108, 0.35);
+    --select-arrow: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8'%3E%3Cpath d='M1 1l5 5 5-5' fill='none' stroke='%233fae6c' stroke-width='2' stroke-linecap='round'/%3E%3C/svg%3E");
+    color-scheme: dark;
+  }
+
+  /* 페이지 전체 기본 모양
+     - 좌우 여백은 휴대폰 화면 가장자리(노치 등)를 피하도록 max() 로 계산 */
+  body {
+    font-family: "Noto Sans KR", "Apple SD Gothic Neo", "Malgun Gothic", "맑은 고딕", sans-serif;
+    background: var(--green-50);
+    color: var(--text);
+    margin: 0;
+    padding-left: max(16px, env(safe-area-inset-left, 0px));
+    padding-right: max(16px, env(safe-area-inset-right, 0px));
+    padding-block: 0 40px;
+    line-height: 1.55;
+    -webkit-font-smoothing: antialiased;    /* 글자 테두리를 부드럽게 */
+    -webkit-tap-highlight-color: transparent; /* 휴대폰에서 누를 때 생기는 파란 상자 없애기 */
+  }
+
+  /* 가운데 정렬된 본문 상자 */
+  .container {
+    max-width: 980px;
+    margin: 0 auto;
+  }
+
+  /* 맨 위 제목 띠 (초록 그라데이션) */
+  .hero {
+    background: linear-gradient(135deg, var(--hero-a) 0%, var(--hero-b) 60%, var(--hero-c) 100%);
+    color: #ffffff;
+    border-radius: 0 0 var(--radius) var(--radius);
+    padding: 28px 24px 24px;
+    margin: 0 0 20px;
+    box-shadow: 0 6px 20px var(--shadow);
+  }
+  .hero h1 {
+    margin: 0 0 6px;
+    font-size: 26px;
+    font-weight: 700;
+    letter-spacing: -0.5px;
+    text-wrap: balance;
+  }
+  .hero p {
+    margin: 0;
+    font-size: 14px;
+    color: rgba(255, 255, 255, 0.88);
+  }
+
+  /* 맨 위 "분석할 클럽" 선택 칸 (초록 제목 띠 안) */
+  .club-bar {
+    margin-top: 16px;
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px 12px;
+  }
+  .club-label { font-size: 13px; font-weight: 700; color: rgba(255, 255, 255, 0.9); }
+  .club-buttons { display: flex; flex-wrap: wrap; gap: 6px; }
+  .club-buttons button {
+    background-color: rgba(255, 255, 255, 0.14);
+    color: #ffffff;
+    border: 1px solid rgba(255, 255, 255, 0.35);
+    box-shadow: none;
+    padding: 8px 16px;
+    border-radius: 999px;   /* 알약 모양 */
+  }
+  .club-buttons button:hover { background-color: rgba(255, 255, 255, 0.24); }
+  /* 지금 고른 클럽은 흰 바탕 + 초록 글자 */
+  .club-buttons button[aria-pressed="true"],
+  .club-buttons button[aria-pressed="true"]:hover {
+    background-color: #ffffff;
+    color: #14532d;
+    border-color: #ffffff;
+  }
+  .hero .club-tip { flex-basis: 100%; margin: 0; font-size: 13px; color: rgba(255, 255, 255, 0.85); }
+  /* 카드 제목: 왼쪽에 초록 막대 */
+  h3 {
+    margin: 0 0 12px;
+    font-size: 18px;
+    font-weight: 700;
+    color: var(--green-900);
+    letter-spacing: -0.3px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  h3::before {
+    content: "";
+    width: 4px;
+    height: 18px;
+    border-radius: 2px;
+    background: var(--green-700);
+    flex: none;
+  }
+
+  /* 카드 모양 상자 */
+  .card {
+    background: var(--card);
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    padding: 20px;
+    margin-bottom: 18px;
+    box-shadow: 0 2px 10px var(--shadow);
+    min-width: 0;
+  }
+
+  /* 입력칸들을 가로로 나란히, 화면이 좁으면 줄바꿈 */
+  .row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 12px;
+    align-items: flex-end;
+  }
+
+  label {
+    display: flex;
+    flex-direction: column;
+    font-size: 13px;
+    font-weight: 500;
+    color: var(--text-soft);
+    gap: 6px;
+    min-width: 0;
+  }
+  /* 체크박스는 글자 옆에 가로로 */
+  label.inline {
+    flex-direction: row;
+    align-items: center;
+    color: var(--text);
+    font-size: 14px;
+    padding-bottom: 8px;
+  }
+  input[type="checkbox"] {
+    width: 20px;
+    height: 20px;
+    accent-color: var(--green-700);   /* 체크 표시 색 */
+  }
+
+  /* 입력칸 · 선택 상자 · 버튼 공통 */
+  input, select, button {
+    font-family: inherit;
+    font-size: 14px;
+    padding: 9px 12px;
+    border: 1px solid var(--field-line);
+    border-radius: 10px;
+    background-color: var(--card);
+    color: var(--text);
+    transition: background-color 0.15s, border-color 0.15s, box-shadow 0.15s, transform 0.05s;
+    max-width: 100%;
+  }
+  /* 칸을 누르면 초록 테두리 + 은은한 빛 */
+  input:focus, select:focus, button:focus-visible {
+    outline: none;
+    border-color: var(--green-700);
+    box-shadow: 0 0 0 3px var(--focus-ring);
+  }
+  input[type="number"] { width: 90px; }
+  /* 선택 상자: 기본 화살표 대신 초록 화살표 그림을 오른쪽에 */
+  select {
+    appearance: none;
+    -webkit-appearance: none;
+    padding-right: 34px;
+    cursor: pointer;
+    background-image: var(--select-arrow);
+    background-repeat: no-repeat;
+    background-position: right 12px center;
+  }
+
+  /* 파일 선택 칸의 "파일 선택" 버튼 꾸미기 */
+  input[type="file"] { padding: 6px; max-width: 100%; }
+  input[type="file"]::file-selector-button {
+    font-family: inherit;
+    border: none;
+    background: var(--green-100);
+    color: var(--green-700);
+    font-weight: 700;
+    padding: 8px 14px;
+    border-radius: 8px;
+    margin-right: 10px;
+    cursor: pointer;
+  }
+
+  /* 기본 버튼 (초록) */
+  button {
+    background-color: var(--green-700);
+    color: var(--on-accent);
+    border: 1px solid transparent;
+    font-weight: 700;
+    padding: 9px 18px;
+    min-height: 44px;     /* 손가락으로 누르기 편한 높이 */
+    cursor: pointer;
+    box-shadow: 0 1px 2px var(--shadow);
+  }
+  button:active { transform: translateY(1px); }   /* 누르면 살짝 눌리는 느낌 */
+  button:disabled {
+    background-color: var(--disabled);
+    color: var(--muted);
+    box-shadow: none;
+    cursor: not-allowed;
+  }
+
+  /* 연한 초록 버튼 (보조 버튼) */
+  button.light {
+    background-color: var(--green-100);
+    color: var(--green-700);
+    border-color: transparent;
+    box-shadow: none;
+  }
+  button.light:disabled { background-color: var(--na-bg); color: var(--muted); }
+  button.small { font-size: 13px; padding: 5px 11px; border-radius: 8px; min-height: 36px; }
+
+  /* 빨간색 버튼 (삭제용) */
+  button.danger { background-color: var(--red); color: #ffffff; }
+  /* 삭제를 한 번 누르면 "한 번 더 누르세요" 상태로 바뀜 */
+  button.confirming { background-color: var(--red); color: #ffffff; outline: 2px solid var(--red); outline-offset: 2px; }
+
+  /* 마우스가 있는 기기에서만 올렸을 때 색 바꾸기 (휴대폰에서는 눌린 색이 남지 않게) */
+  @media (hover: hover) {
+    input:hover, select:hover { border-color: var(--green-700); }
+    button:hover { background-color: var(--green-600); }
+    button.light:hover { background-color: var(--green-150); }
+    button.danger:hover, button.confirming:hover { background-color: var(--red-text); }
+    input[type="file"]::file-selector-button:hover { background: var(--green-150); }
+    tbody tr:hover { background: var(--row-hover); }
+  }
+
+  /* 표 모양: 세로줄 없이 가로줄만 얇게 */
+  table {
+    width: 100%;
+    border-collapse: collapse;   /* 칸 사이 테두리를 한 줄로 합치기 */
+    margin-top: 12px;
+  }
+  th, td {
+    border-bottom: 1px solid var(--line);
+    padding: 10px 10px;
+    text-align: center;
+    font-size: 14px;
+    vertical-align: middle;
+    font-variant-numeric: tabular-nums;   /* 숫자 폭을 같게 해서 줄 맞춤 */
+  }
+  th {
+    background: var(--green-100);
+    color: var(--green-900);
+    font-size: 13px;
+    font-weight: 700;
+    white-space: nowrap;      /* 머리글은 줄바꿈 없이 */
+  }
+  /* 표 머리의 양 끝 모서리를 둥글게 */
+  th:first-child { border-top-left-radius: 10px; }
+  th:last-child  { border-top-right-radius: 10px; }
+  /* 글자가 긴 칸은 왼쪽 정렬 + 너무 좁아지지 않게 최소 너비 */
+  td.left { text-align: left; min-width: 150px; }
+
+  /* 표가 화면보다 넓으면 표 안에서만 가로 스크롤 (휴대폰에서 손가락으로 밀기) */
+  .table-wrap { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+
+  .hint { color: var(--text-soft); font-size: 13px; margin: 4px 0 8px; }
+
+  /* 노란색 안내 상자 (정확도 한계 안내) */
+  .notice {
+    background: var(--notice-bg);
+    border: 1px solid var(--notice-line);
+    border-left: 4px solid var(--notice-bar);
+    padding: 12px 16px;
+    border-radius: 10px;
+    font-size: 14px;
+    line-height: 1.7;
+    color: var(--notice-text);
+  }
+  .notice ul { margin: 6px 0 0; padding-left: 20px; }
+
+  /* 라이브러리 불러오기 상태 표시줄 (둥근 알림 막대) */
+  .status {
+    font-size: 13px;
+    margin: 14px 0 8px;
+    padding: 8px 12px;
+    border-radius: 10px;
+    background: var(--status-bg);
+    color: var(--text-soft);
+  }
+  .status.error { background: var(--red-soft); color: var(--red-text); font-weight: 700; }
+  .status.ok { background: var(--green-100); color: var(--green-700); font-weight: 500; }
+
+  /* 분석 진행 막대 */
+  progress {
+    width: 100%;
+    height: 10px;
+    accent-color: var(--green-700);
+    border-radius: 6px;
+  }
+
+  /* 영상 + 뼈대 그림을 겹치기 위한 상자
+     - position: relative 인 상자 안에서
+     - canvas 를 position: absolute 로 영상 위에 정확히 겹칩니다. */
+  .media-wrap {
+    position: relative;
+    background: radial-gradient(circle at 50% 30%, #1b4a2c 0%, #0c2616 100%);
+    border-radius: 12px;
+    overflow: hidden;
+    min-height: 160px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .media-box {
+    position: relative;     /* 캔버스가 이 상자 기준으로 겹쳐짐 */
+    width: 100%;
+  }
+  .media-box video, .media-box img {
+    display: block;
+    width: 100%;
+    max-width: 100%;
+    max-height: 70vh;
+    object-fit: contain;
+  }
+  #overlay {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    pointer-events: none;   /* 캔버스가 터치를 막지 않도록 (영상 조작 가능) */
+    object-fit: contain;    /* 세로 영상처럼 양옆이 비어도 그림이 영상과 같은 위치에 그려지도록 */
+  }
+  /* 공·클럽헤드를 터치하는 중에는 영상 테두리를 노랗게 */
+  .media-box.tapping { outline: 3px solid #f5c542; outline-offset: -3px; }
+  .media-box.tapping #overlay { cursor: crosshair; }
+  .placeholder {
+    color: #cfe6d3;
+    padding: 56px 16px;
+    text-align: center;
+    font-size: 15px;
+    cursor: pointer;        /* 눌러서 파일 고르기 */
+  }
+  /* 파일을 끌어다 올렸을 때 점선 테두리 */
+  .media-wrap.dragover { outline: 3px dashed #7fd18f; outline-offset: -8px; }
+
+  /* 진단 결과 배지 (알약 모양) */
+  .badge {
+    display: inline-block;
+    padding: 3px 10px;
+    border-radius: 999px;
+    font-size: 12px;
+    font-weight: 700;
+    white-space: nowrap;
+    margin: 1px 0;
+  }
+  .badge.good { background: var(--good-bg); color: var(--good-text); }
+  .badge.warn { background: var(--warn-bg); color: var(--warn-text); }
+  .badge.na   { background: var(--na-bg);   color: var(--na-text); }
+
+  /* 측정 불가 칸은 회색 글씨 */
+  .muted { color: var(--muted); font-size: 12px; }
+
+  /* 정확도 표시 색 */
+  .acc-high { color: var(--good-text); font-weight: 700; }
+  .acc-mid  { color: var(--mid-text); font-weight: 700; }
+  .acc-low  { color: var(--red-text); font-weight: 700; }
+
+  /* 지금 선택된(현재 프레임) 구간 줄 강조 */
+  tr.current, tr.current:hover { background: var(--row-current); box-shadow: inset 3px 0 0 var(--green-700); }
+
+  /* 기록 표의 작은 사진(썸네일) */
+  img.thumb {
+    width: 90px;
+    border-radius: 8px;
+    display: block;
+    margin: 0 auto;
+    box-shadow: 0 1px 4px var(--shadow);
+  }
+  /* 이전 기록 대비 변화량 (좋고 나쁨 판단 없이 회색 숫자로만) */
+  .delta { color: var(--muted); font-size: 11px; display: block; }
+
+  .pro-summary { font-size: 14px; line-height: 1.7; margin: 14px 0 0; }
+  .sources { padding-left: 20px; margin: 14px 0 0; }
+  .sources li { font-size: 13px; line-height: 1.7; color: var(--text-soft); overflow-wrap: anywhere; }
+
+  /* 화면 아래쪽에 잠깐 떴다 사라지는 알림 (휴대폰에서는 alert 창이 안 뜨기 때문) */
+  .toast {
+    position: fixed;
+    left: 50%;
+    bottom: calc(20px + env(safe-area-inset-bottom, 0px));
+    transform: translateX(-50%);
+    max-width: min(520px, calc(100% - 32px));
+    background: var(--text);
+    color: var(--card);
+    padding: 12px 16px;
+    border-radius: 12px;
+    font-size: 14px;
+    box-shadow: 0 6px 20px var(--shadow);
+    z-index: 20;
+  }
+
+  /* 휴대폰처럼 좁은 화면 */
+  @media (max-width: 600px) {
+    .hero { padding: 22px 18px 18px; }
+    .hero h1 { font-size: 22px; }
+    .card { padding: 16px; }
+    th, td { padding: 8px 6px; font-size: 13px; }
+    /* 입력칸은 한 줄에 하나씩, 화면 너비만큼 */
+    .row > label:not(.inline) { flex: 1 1 100%; }
+    .row > label:not(.inline) > input,
+    .row > label:not(.inline) > select { width: 100%; }
+    .row > button { flex: 1 1 auto; }
+    /* iPhone 은 글자가 16px 보다 작은 칸을 누르면 화면을 확대하므로 16px 로 */
+    input, select { font-size: 16px; }
+    .media-box video, .media-box img { max-height: 60vh; }
+  }
+
+  /* 움직임 줄이기 설정을 켠 사람에게는 효과를 빼기 */
+  @media (prefers-reduced-motion: reduce) {
+    * { transition: none !important; }
+  }
+
+  /* hidden 속성이 붙은 요소는 숨기기 (알림 상자 등) */
+  [hidden] { display: none !important; }
+  img { max-width: 100%; }
+</style>
+</head>
+
+<body>
+
+  <div class="container">
+    <!-- 맨 위 제목 띠 -->
+    <header class="hero">
+      <h1 id="appTitle">🏌️ 드라이버 스윙 분석기</h1>
+      <p>
+        내 휴대폰(또는 컴퓨터)의 스윙 영상이나 사진을 고르면 브라우저 안에서 몸의 관절을 찾아 뼈대를 그리고,
+        주요 구간의 각도와 흔한 실수를 보여 줍니다. <b>영상은 어디에도 업로드되지 않습니다.</b>
+      </p>
+      <!-- 분석할 클럽: 고른 클럽에 맞춰 참고 범위·진단 기준·구질 원인·어택 앵글 평가가 바뀝니다 -->
+      <div class="club-bar" role="group" aria-label="분석할 클럽">
+        <span class="club-label">분석할 클럽</span>
+        <div class="club-buttons" id="clubButtons">
+          <button type="button" data-club="driver" aria-pressed="true">드라이버</button>
+          <button type="button" data-club="wood" aria-pressed="false">우드·유틸</button>
+          <button type="button" data-club="iron" aria-pressed="false">아이언</button>
+          <button type="button" data-club="wedge" aria-pressed="false">웨지</button>
+        </div>
+        <p class="club-tip" id="clubTip"></p>
+      </div>
+    </header>
+
+    <!-- ============ 1) 설정 영역 ============ -->
+    <div class="card">
+      <h3>1. 영상 고르기 & 설정</h3>
+      <div class="row">
+        <label>
+          스윙 영상 또는 사진
+          <!-- accept: 영상과 이미지 파일만 고를 수 있게 제한 -->
+          <input type="file" id="fileInput" accept="video/*,image/*">
+        </label>
+        <label>
+          촬영 방향
+          <select id="viewSelect">
+            <option value="face">정면 (가슴 쪽에서 촬영)</option>
+            <option value="dtl">측면 (뒤쪽 비구선에서 촬영)</option>
+          </select>
+        </label>
+        <label>
+          치는 손
+          <select id="handSelect">
+            <option value="right">오른손잡이 (왼팔이 리드 암)</option>
+            <option value="left">왼손잡이 (오른팔이 리드 암)</option>
+          </select>
+        </label>
+        <label>
+          AI 모델
+          <select id="modelSelect">
+            <option value="full">정확 (full, 약 9MB)</option>
+            <option value="lite">빠름 (lite, 약 5MB)</option>
+          </select>
+        </label>
+      </div>
+      <div class="row" style="margin-top:10px">
+        <label>
+          분석 간격 (초당 프레임)
+          <select id="fpsSelect">
+            <option value="15">15 (빠름)</option>
+            <option value="30" selected>30 (보통)</option>
+            <option value="60">60 (느림, 고속 영상용)</option>
+          </select>
+        </label>
+        <label>
+          분석 시작 (초)
+          <input type="number" id="startInput" min="0" step="0.1" value="0">
+        </label>
+        <label>
+          분석 끝 (초)
+          <input type="number" id="endInput" min="0" step="0.1" value="0">
+        </label>
+        <button id="analyzeBtn" disabled>▶ 자세 분석 시작</button>
+      </div>
+      <p class="hint">스윙 한 번이 들어 있는 2~8초짜리 영상이 가장 좋습니다. 긴 영상은 시작/끝 시간을 지정하세요.</p>
+      <!-- 라이브러리 상태와 진행 막대 -->
+      <div class="status" id="statusText">준비 중…</div>
+      <progress id="progressBar" value="0" max="100" style="display:none"></progress>
+
+      <!-- 촬영 방향별 정확도 안내 (JavaScript가 내용을 채움) -->
+      <div class="notice" id="viewNotice" style="margin-top:10px"></div>
+    </div>
+
+    <!-- ============ 2) 영상 + 뼈대 영역 ============ -->
+    <div class="card">
+      <h3>2. 영상 보기</h3>
+      <div class="media-wrap" id="mediaWrap">
+        <div class="placeholder" id="placeholder">
+          여기를 눌러 휴대폰의 스윙 영상(또는 사진)을 고르세요.<br>
+          컴퓨터에서는 파일을 끌어다 놓아도 됩니다.
+        </div>
+        <div class="media-box" id="mediaBox" style="display:none">
+          <!-- controls: 재생/일시정지/탐색 막대가 있는 기본 플레이어 -->
+          <video id="video" controls playsinline preload="auto"></video>
+          <img id="photo" alt="업로드한 사진" style="display:none">
+          <!-- 뼈대를 그리는 투명 도화지(캔버스): 영상 위에 겹쳐짐 -->
+          <canvas id="overlay"></canvas>
+        </div>
+      </div>
+      <div class="row" style="margin-top:10px">
+        <button class="light" id="prevFrameBtn">◀ 이전 프레임</button>
+        <button class="light" id="nextFrameBtn">다음 프레임 ▶</button>
+        <label>
+          재생 속도
+          <select id="rateSelect">
+            <option value="0.25">0.25배 (슬로)</option>
+            <option value="0.5">0.5배</option>
+            <option value="1" selected>1배</option>
+          </select>
+        </label>
+        <label class="inline"><input type="checkbox" id="skeletonCheck" checked> 뼈대 표시</label>
+        <span class="hint" id="frameInfo"></span>
+      </div>
+    </div>
+
+    <!-- ============ 3) 구간(어드레스/탑/임팩트/피니시) ============ -->
+    <div class="card">
+      <h3>3. 스윙 구간</h3>
+      <p class="hint">
+        분석이 끝나면 손(양 손목) 높이와 속도로 구간을 자동으로 찾습니다.
+        틀렸다면 영상을 원하는 장면으로 옮긴 뒤 <b>「현재 프레임으로 지정」</b>을 누르세요.
+      </p>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>구간</th>
+              <th>시간 (초)</th>
+              <th>장면 보기</th>
+              <th>직접 지정</th>
+            </tr>
+          </thead>
+          <tbody id="phaseTableBody"></tbody>
+        </table>
+      </div>
+      <div class="row" style="margin-top:10px">
+        <button class="light" id="autoPhaseBtn" disabled>구간 자동으로 다시 찾기</button>
+        <span class="hint" id="phaseWarning"></span>
+      </div>
+    </div>
+
+    <!-- ============ 4) 공 · 클럽헤드 터치 (임팩트 정밀 찾기 / 어택 앵글) ============ -->
+    <div class="card">
+      <h3>4. 공 · 클럽헤드 터치</h3>
+      <div class="notice">
+        📷 <b>정면 촬영 + 슬로모션(120/240fps) 영상</b>에서 가장 잘 됩니다.
+        카메라는 <b>공 높이</b>에서 비구선과 <b>직각</b>으로 두세요. 카메라가 비스듬하면 각도가 틀어집니다.
+        일반 30fps 영상은 임팩트 순간 클럽헤드가 거의 찍히지 않아 ②가 어렵습니다.
+        <span id="touchViewWarn"></span>
+      </div>
+
+      <!-- ① 공 위치로 임팩트 찾기 -->
+      <p class="hint" style="margin-top:14px">
+        <b>① 공 위치로 임팩트 찾기</b> — 공이 보이는 장면(어드레스)에서 「공 위치 찍기」를 누르고 영상 속 공을 터치하세요.
+        「공이 사라지는 장면 찾기」를 누르면 공 자리가 바뀌는(클럽에 맞아 사라지는) 프레임을 찾아 <b>임팩트</b>로 정합니다.
+      </p>
+      <div class="row">
+        <button class="light" id="ballTapBtn" disabled>🎯 공 위치 찍기</button>
+        <button id="ballFindBtn" disabled>공이 사라지는 장면 찾기</button>
+      </div>
+      <p class="hint" id="ballMsg"></p>
+
+      <!-- ② 클럽헤드 터치로 어택 앵글 -->
+      <p class="hint" style="margin-top:14px">
+        <b>② 클럽헤드 터치로 올려 치기 / 내려 치기</b> — 「클럽헤드 찍기 시작」을 누른 뒤,
+        아래 프레임 버튼으로 <b>임팩트 직전 2~3장면과 직후 1~2장면</b>을 오가며 장면마다 클럽헤드 가운데를 터치하세요.
+        같은 장면에서 다시 터치하면 그 점이 바뀝니다.
+      </p>
+      <div class="row">
+        <button class="light" id="clubTapBtn" disabled>✋ 클럽헤드 찍기 시작</button>
+        <button class="light small" id="touchPrevBtn">◀ 이전 프레임</button>
+        <button class="light small" id="touchNextBtn">다음 프레임 ▶</button>
+        <button class="light small" id="clubUndoBtn">마지막 점 지우기</button>
+        <button class="light small" id="clubClearBtn">모두 지우기</button>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>점</th>
+              <th>시간 (초)</th>
+              <th>위치 (가로, 세로 px)</th>
+              <th>공 기준</th>
+            </tr>
+          </thead>
+          <tbody id="clubTableBody"></tbody>
+        </table>
+      </div>
+      <!-- 어택 앵글 결과 -->
+      <p class="pro-summary" id="attackResult"></p>
+
+      <!-- ③ 속도 계산 -->
+      <p class="hint" style="margin-top:18px">
+        <b>③ 헤드스피드 · 볼 스피드 · 발사각 · 스매시 팩터</b> — 아래 세 칸을 채우면 ②에서 찍은 클럽헤드 점(임팩트 직전 2~3개)으로 헤드스피드를 계산합니다.
+        볼 스피드와 발사각은 「날아가는 공 찍기」를 누른 뒤 <b>임팩트 직후 공이 보이는 2~3장면</b>에서 공을 터치하세요.
+      </p>
+      <div class="row">
+        <label>
+          내 키 (cm)
+          <input type="number" id="heightInput" min="100" max="230" step="1" placeholder="예: 172">
+        </label>
+        <label>
+          카메라 ~ 공 거리 (m)
+          <input type="number" id="camDistInput" min="1" max="15" step="0.1" value="3">
+        </label>
+        <label>
+          슬로모션 배속
+          <select id="slowmoSelect">
+            <option value="1">실제 속도로 재생되는 영상</option>
+            <option value="2">2배 느리게 재생되는 영상</option>
+            <option value="4">4배 느리게 (120fps를 30fps로 재생)</option>
+            <option value="8">8배 느리게 (240fps를 30fps로 재생)</option>
+            <option value="16">16배 느리게 재생되는 영상</option>
+          </select>
+        </label>
+      </div>
+      <p class="hint">
+        배속 확인법: 영상을 「1배」로 재생했을 때 스윙이 실제보다 느리게 보이면 슬로모션으로 저장된 영상입니다.
+        촬영 fps(예: 240) ÷ 재생 fps(보통 30) = 배속입니다. 1배로 봐도 실제 속도면 「실제 속도」를 고르세요.
+      </p>
+      <div class="row">
+        <button class="light" id="flightTapBtn" disabled>⚾ 날아가는 공 찍기 시작</button>
+        <button class="light small" id="flightUndoBtn">공 점 마지막 지우기</button>
+        <button class="light small" id="flightClearBtn">공 점 모두 지우기</button>
+      </div>
+      <!-- 속도 결과 -->
+      <p class="pro-summary" id="speedResult"></p>
+    </div>
+
+    <!-- ============ 4) 각도 측정 표 ============ -->
+    <div class="card">
+      <h3>5. 구간별 각도 측정</h3>
+      <p class="hint">
+        "참고 범위"는 일반적인 레슨 자료에서 흔히 언급되는 <b>대략적인 범위</b>이며 정답이 아닙니다.
+        체형·유연성·스윙 스타일에 따라 달라도 괜찮습니다.
+      </p>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>항목</th>
+              <th>어드레스</th>
+              <th>백스윙 탑</th>
+              <th>임팩트</th>
+              <th>피니시</th>
+              <th>대략적인 참고 범위</th>
+              <th>이 촬영 방향의 정확도</th>
+            </tr>
+          </thead>
+          <tbody id="metricTableBody"></tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- ============ 5) 흔한 실수 진단 표 ============ -->
+    <div class="card">
+      <h3>6. 흔한 실수 진단</h3>
+      <p class="hint">판정 기준은 이 앱이 교육용으로 정한 대략적인 값입니다. "주의"가 나와도 실제 문제인지는 영상을 직접 보며 확인하세요.</p>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>항목</th>
+              <th>결과</th>
+              <th>근거 (측정값)</th>
+              <th>설명 / 연습 팁</th>
+            </tr>
+          </thead>
+          <tbody id="diagTableBody"></tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- ============ 6) 공이 잘못 맞는 이유 (구질 원인) ============ -->
+    <div class="card">
+      <h3>7. 공이 잘못 맞는 이유</h3>
+      <div class="notice">
+        ⚠️ 공이 날아가는 방향과 휘어짐은 <b>임팩트 순간의 클럽 페이스 방향과 스윙 궤도</b>가 거의 결정합니다.
+        이 앱은 공과 클럽을 보지 못하고 <b>몸의 움직임만</b> 보므로, 아래 내용은
+        "이런 몸 동작이 있으면 이런 구질이 나오기 쉽다"는 <b>일반적인 경향</b>입니다. 한 가지 동작이 여러 구질을 만들 수 있습니다.
+        <span id="flightHandNote"></span>
+      </div>
+
+      <!-- (가) 내 영상에서 찾은 원인 -->
+      <p class="hint" style="margin-top:14px"><b>① 내 영상에서 보인 동작과, 그 때문에 나오기 쉬운 구질</b></p>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>보인 동작</th>
+              <th>근거 (측정값)</th>
+              <th>왜 공이 잘못 맞나</th>
+              <th>나오기 쉬운 구질</th>
+              <th>연습 방법</th>
+            </tr>
+          </thead>
+          <tbody id="causeTableBody"></tbody>
+        </table>
+      </div>
+
+      <!-- (나) 실제 구질을 고르면 흔한 원인과 내 영상 해당 여부 -->
+      <p class="hint" style="margin-top:18px"><b>② 실제로 자주 나오는 구질을 고르면, 흔한 원인과 내 영상에서 보였는지 알려 드립니다</b></p>
+      <div class="row">
+        <label>
+          내 구질
+          <select id="flightSelect"></select>
+        </label>
+      </div>
+      <p class="pro-summary" id="flightDesc"></p>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>흔한 원인</th>
+              <th>내 영상</th>
+              <th>설명</th>
+            </tr>
+          </thead>
+          <tbody id="flightTableBody"></tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- ============ 7) 프로 선수와 비교 ============ -->
+    <div class="card">
+      <h3>8. 프로 선수 스윙 특징과 비교</h3>
+      <div class="row">
+        <label>
+          비교할 선수
+          <select id="proSelect"></select>
+        </label>
+      </div>
+      <div class="notice" style="margin-top:10px">
+        ⚠️ 아래 선수 설명은 방송·레슨 기사 등에서 <b>일반적으로 알려진 특징을 요약</b>한 것입니다.
+        이 앱은 선수의 실제 측정 수치를 가지고 있지 않으며, 수치를 지어내지 않습니다.
+        비교는 내 측정값을 "대략적인 참고 범위"와 견주어 <b>방향(더 크다/작다)</b>만 설명합니다.
+        선수의 스윙도 시기·코치·부상에 따라 계속 바뀝니다.
+        참고 범위와 선수 특징은 <b>맨 위에서 고른 클럽</b> 기준으로 바뀝니다.
+      </div>
+      <p class="pro-summary" id="proSummary"></p>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>일반적으로 알려진 특징</th>
+              <th>내 스윙 (측정값)</th>
+              <th>비교</th>
+            </tr>
+          </thead>
+          <tbody id="proTableBody"></tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- ============ 7) 내 스윙 기록 ============ -->
+    <div class="card">
+      <h3>9. 내 스윙 기록</h3>
+      <p class="hint">
+        분석이 끝난 뒤 「기록하기」를 누르면 지금 결과(주요 각도·템포·주의 항목·탑 장면 작은 사진)가 저장됩니다.
+        영상 자체는 저장하지 않습니다. 같은 촬영 방향끼리 비교해야 의미가 있습니다.
+      </p>
+      <!-- 저장 위치 안내 (내 계정 저장소에 연결되면 JavaScript가 글자를 바꿈) -->
+      <p class="hint" id="historyNote">
+        지금은 이 기기의 브라우저에 저장됩니다. 다른 기기에서는 보이지 않습니다.
+      </p>
+      <div class="row">
+        <label>
+          메모 (선택)
+          <input type="text" id="memoInput" maxlength="60" placeholder="예: 연습장, 그립 바꿈" style="width:240px">
+        </label>
+        <button id="recordBtn" disabled>📝 기록하기</button>
+        <span class="hint" id="recordMsg"></span>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>날짜</th>
+              <th>탑 장면</th>
+              <th>메모 / 파일</th>
+              <th>클럽 · 촬영 방향</th>
+              <th>척추 (어드레스)</th>
+              <th>탑 리드 팔</th>
+              <th>탑 어깨 회전</th>
+              <th>X-팩터</th>
+              <th>템포</th>
+              <th>주의 항목</th>
+              <th>삭제</th>
+            </tr>
+          </thead>
+          <!-- 기록 목록은 JavaScript가 그려 넣습니다 -->
+          <tbody id="historyTableBody"></tbody>
+        </table>
+      </div>
+      <p class="hint">작은 회색 숫자는 <b>같은 클럽 · 같은 촬영 방향의 바로 이전 기록</b>과 비교한 변화량입니다.</p>
+      <button class="light" id="clearHistoryBtn">전체 기록 삭제</button>
+    </div>
+
+    <!-- ============ 8) 한계와 출처 ============ -->
+    <div class="card">
+      <h3>10. 정확도 한계와 참고 자료</h3>
+      <div class="notice">
+        <b>꼭 알아 두세요</b>
+        <ul>
+          <li>카메라 한 대로 찍은 <b>2D 영상</b>으로 3D 동작을 추정하므로, 각도는 수 도에서 십수 도까지 틀릴 수 있습니다.</li>
+          <li>카메라가 몸과 비스듬하면(정면·측면이 아닌 사선) 각도가 크게 왜곡됩니다.</li>
+          <li>임팩트는 매우 빨라서 일반 30fps 영상에서는 정확한 임팩트 장면이 찍히지 않을 수 있습니다. 가능하면 휴대폰의 슬로모션(120/240fps)으로 찍으세요.</li>
+          <li>이 앱은 <b>클럽(채)을 추적하지 않습니다.</b> 클럽 각도, 클럽 페이스, 손목 꺾임, 오버스윙의 정확한 판단은 관절 위치로 간접 추정할 뿐입니다.</li>
+          <li>헐렁한 옷, 어두운 조명, 몸이 화면 밖으로 잘림, 다른 사람이 함께 찍힘 등은 관절 인식을 흔들리게 합니다.</li>
+          <li>의학적·전문 코칭을 대신하지 않습니다. 통증이 있다면 전문가와 상담하세요.</li>
+        </ul>
+      </div>
+      <ul class="sources">
+        <li>자세 추정: Google MediaPipe Pose Landmarker (Tasks Vision, 33개 관절점) — ai.google.dev/edge/mediapipe/solutions/vision/pose_landmarker</li>
+        <li>템포 약 3:1 (백스윙:다운스윙): John Novosel &amp; John Garrity, 「Tour Tempo」(2004)에서 널리 알려진 개념</li>
+        <li>X-팩터 (어깨 회전과 골반 회전의 차이): Jim McLean이 1990년대 초 Golf Magazine 등을 통해 알린 개념</li>
+        <li>치킨윙, 스웨이, 얼리 익스텐션, 오버스윙 등 용어와 참고 범위: 일반적인 골프 레슨 자료에서 흔히 쓰이는 설명을 바탕으로 이 앱이 정리한 대략적인 값</li>
+        <li>프로 선수 특징: 방송 해설·인터뷰·레슨 기사 등에서 자주 언급되는 내용을 요약 (정밀 측정 데이터 아님)</li>
+      </ul>
+    </div>
+  </div>
+
+  <!-- ===================== JavaScript: 동작 ===================== -->
+  <!--
+    type="module" 로 쓰면 "import()" 문법으로 인터넷의 라이브러리를 불러올 수 있습니다.
+    (모듈 안의 변수·함수는 이 스크립트 안에서만 보입니다)
+  -->
+  <script type="module">
+    // ----------------------------------------------------------
+    // [1] 기본 설정값
+    // ----------------------------------------------------------
+
+    // 자세 추정 라이브러리(MediaPipe Tasks Vision)의 버전.
+    // 버전을 정확히 고정해 두면, 나중에 라이브러리가 바뀌어도 이 파일은 똑같이 동작합니다.
+    const LIB_VERSION = "0.10.14";
+    // (앱판: 인터넷 없이도 동작하도록 같은 폴더의 mediapipe/ 에서 불러옵니다. 내용은 jsDelivr 의 0.10.14 원본과 같음)
+    const LIB_URL  = new URL("mediapipe/vision_bundle.mjs", location.href).href;
+    // 라이브러리가 내부에서 쓰는 WebAssembly(빠른 계산용 프로그램) 파일 위치
+    const WASM_URL = new URL("mediapipe/wasm", location.href).href;
+
+    // AI 모델 파일 (Google이 공개한 자세 추정 모델, 버전 1로 고정)
+    const MODEL_URLS = {
+      // 원본: storage.googleapis.com/mediapipe-models/pose_landmarker/…/float16/1/ (앱 폴더 models/ 에 넣어 둠)
+      lite: new URL("models/pose_landmarker_lite.task", location.href).href,
+      full: new URL("models/pose_landmarker_full.task", location.href).href
+    };
+
+    // MediaPipe가 찾아 주는 33개 관절점 중 이 앱이 쓰는 번호
+    // (왼쪽/오른쪽은 "찍힌 사람" 기준입니다. 화면 기준이 아님)
+    const LM = {
+      NOSE: 0,
+      L_SH: 11, R_SH: 12,   // 어깨 (shoulder)
+      L_EL: 13, R_EL: 14,   // 팔꿈치 (elbow)
+      L_WR: 15, R_WR: 16,   // 손목 (wrist)
+      L_HIP: 23, R_HIP: 24, // 골반 (hip)
+      L_KN: 25, R_KN: 26,   // 무릎 (knee)
+      L_AN: 27, R_AN: 28    // 발목 (ankle)
+    };
+
+    // 뼈대를 그릴 때 이어 줄 관절 쌍 (예: [11, 13] = 왼어깨 ─ 왼팔꿈치)
+    const BONES = [
+      [11, 12], [11, 13], [13, 15], [12, 14], [14, 16],   // 어깨·팔
+      [11, 23], [12, 24], [23, 24],                       // 몸통
+      [23, 25], [25, 27], [24, 26], [26, 28],             // 다리
+      [27, 29], [29, 31], [27, 31], [28, 30], [30, 32], [28, 32] // 발
+    ];
+
+    // 스윙 구간 목록 (key: 프로그램 안에서 쓰는 이름, name: 화면 표시)
+    const PHASES = [
+      { key: "address", name: "어드레스" },
+      { key: "top",     name: "백스윙 탑" },
+      { key: "impact",  name: "임팩트" },
+      { key: "finish",  name: "피니시" }
+    ];
+
+    // "대략적인 참고 범위" (일반 레슨 자료에서 흔히 언급되는 값을 이 앱이 정리한 것)
+    // min ~ max 사이면 "범위 안"으로 봅니다. 정답이 아니라 참고용입니다.
+    const REF = {
+      spineDtl:     { min: 30, max: 45 },  // 측면: 어드레스 척추 앞숙임 (수직선 기준)
+      spineFace:    { min: 0,  max: 15 },  // 정면: 어드레스 척추 옆기울기
+      leadArmTop:   { min: 160, max: 180 },// 탑에서 리드 팔 각도 (180 = 완전히 폄)
+      shoulderTop:  { min: 80, max: 100 }, // 탑 어깨 회전 (주로 프로·상급자 기준)
+      hipTop:       { min: 35, max: 55 },  // 탑 골반 회전
+      xFactorTop:   { min: 35, max: 55 },  // X-팩터 (어깨 - 골반)
+      kneeAddress:  { min: 15, max: 30 },  // 어드레스 무릎 굽힘
+      tempo:        { min: 2.5, max: 3.5 } // 백스윙 시간 ÷ 다운스윙 시간 (약 3:1)
+    };
+
+    // 흔한 실수 판정 기준 (이 앱이 교육용으로 정한 대략적인 값)
+    const LIMIT = {
+      chickenWing: 140,   // 임팩트 직후 리드 팔이 이 각도보다 작게 굽으면 "치킨윙 의심"
+      sway: 25,           // 백스윙 때 머리가 어깨폭의 25% 넘게 뒤로 밀리면 "스웨이 의심"
+      hipToBall: 8,       // 임팩트 때 골반이 몸통 길이의 8% 넘게 공 쪽으로 나오면
+      spineLoss: 8,       // 또는 척추 앞숙임이 8° 넘게 줄면 "얼리 익스텐션 의심"
+      overswingArm: 145,  // 탑에서 리드 팔이 145°보다 많이 굽으면 "오버스윙 의심"
+      kneeStraighten: 10, // 백스윙 때 트레일 무릎 굽힘이 10° 넘게 펴지면
+      headVertical: 10    // 임팩트 때 머리가 몸통 길이의 10% 넘게 오르내리면
+    };
+
+    // 스윙 기록을 브라우저 저장소(localStorage)에 저장할 때 쓰는 이름(열쇠)
+    const HISTORY_KEY = "swingAnalyzerHistory";
+
+    // 마지막으로 고른 클럽을 기억할 때 쓰는 이름(열쇠)
+    const CLUB_KEY = "swingAnalyzerClub";
+
+    // 클럽별 기준 (일반적인 레슨 자료에서 흔히 쓰는 설명을 이 앱이 정리한 "대략적인" 값)
+    //  - spineFace / spineDtl : 어드레스 척추 기울기 참고 범위 (정면 옆기울기 / 측면 앞숙임)
+    //    클럽이 짧을수록 공에 가까이 서서 더 숙이고, 정면 옆기울기는 줄어듭니다.
+    //  - attack     : 일반적인 어택 앵글 방향 ("up" 올려 침 / "level" 거의 수평 / "down" 내려 침)
+    //  - impactHead : 임팩트 때 일반적인 머리 위치 ("behind" 공 뒤에 남음 / "over" 공 위나 살짝 타깃 쪽)
+    //  - setup      : 준비 자세 요점
+    const CLUB_PROFILES = {
+      driver: {
+        name: "드라이버",
+        spineFace: { min: 0, max: 15 }, spineDtl: { min: 30, max: 45 },
+        attack: "up", attackText: "티 위의 공을 올려 치는(+) 경우가 많습니다",
+        impactHead: "behind",
+        setup: "공은 리드 발 뒤꿈치 안쪽, 스탠스는 어깨보다 조금 넓게",
+        // 백스윙 탑 참고 범위 (풀스윙, 프로·상급자 기준의 대략값)
+        proRef: { shoulderTop: { min: 80, max: 100 }, hipTop: { min: 35, max: 55 },
+                  xFactorTop: { min: 35, max: 55 }, leadArmTop: { min: 160, max: 180 } }
+      },
+      wood: {
+        name: "우드·유틸리티",
+        spineFace: { min: 0, max: 12 }, spineDtl: { min: 30, max: 45 },
+        attack: "level", attackText: "바닥의 공을 쓸어 치듯 거의 수평(0° 근처)이거나 살짝 내려 치는 경우가 많습니다",
+        impactHead: "over",
+        setup: "공은 가운데보다 공 1~2개 리드 쪽, 스탠스는 어깨너비 정도",
+        proRef: { shoulderTop: { min: 80, max: 100 }, hipTop: { min: 35, max: 55 },
+                  xFactorTop: { min: 35, max: 55 }, leadArmTop: { min: 160, max: 180 } }
+      },
+      iron: {
+        name: "아이언",
+        spineFace: { min: 0, max: 10 }, spineDtl: { min: 35, max: 50 },
+        attack: "down", attackText: "공을 먼저 맞히며 내려 치는(−) 것이 일반적입니다",
+        impactHead: "over",
+        setup: "공은 스탠스 가운데 근처(7번 기준), 스탠스는 어깨너비",
+        // 클럽이 짧을수록 백스윙과 회전이 조금 작아지는 것이 일반적이라 범위를 낮춤
+        proRef: { shoulderTop: { min: 75, max: 95 }, hipTop: { min: 30, max: 50 },
+                  xFactorTop: { min: 35, max: 50 }, leadArmTop: { min: 160, max: 180 } }
+      },
+      wedge: {
+        name: "웨지",
+        spineFace: { min: 0, max: 8 }, spineDtl: { min: 35, max: 50 },
+        attack: "down", attackText: "아이언보다 더 가파르게 내려 치는(−) 경우가 많습니다",
+        impactHead: "over",
+        setup: "공은 가운데나 살짝 트레일 쪽, 스탠스는 좁게",
+        // 웨지 풀스윙은 보통 더 짧고 간결함
+        proRef: { shoulderTop: { min: 65, max: 90 }, hipTop: { min: 25, max: 45 },
+                  xFactorTop: { min: 30, max: 50 }, leadArmTop: { min: 155, max: 180 } }
+      }
+    };
+
+    // ----------------------------------------------------------
+    // [2] 프로그램 상태(데이터)를 담는 변수
+    // ----------------------------------------------------------
+    let visionLib = null;    // 불러온 MediaPipe 라이브러리
+    let fileset = null;      // WebAssembly 파일 정보
+    let landmarker = null;   // 자세 추정기 (AI 모델이 들어 있음)
+    let loadedModel = "";    // 지금 불러와 둔 모델 이름 (lite/full)
+
+    // frames: 분석한 프레임 목록
+    //  예) frames[0] = { t: 0.0, lm: [33개 관절 {x, y, z, visibility}], world: [33개 3D 좌표] }
+    //  - lm 의 x, y 는 0~1 사이 값 (화면 너비/높이에 대한 비율)
+    //  - world 는 골반 중심 기준 3D 좌표(미터 단위 추정값)
+    let frames = [];
+    let fps = 30;            // 분석 간격 (초당 몇 장)
+    let mediaW = 1, mediaH = 1; // 영상(사진)의 실제 가로·세로 픽셀
+    let isImage = false;     // 사진 한 장을 분석 중인지
+    let mediaReady = false;  // 영상/사진이 열려 있는지
+    let analyzing = false;   // 분석 진행 중인지
+    let objectUrl = null;    // 내 파일을 브라우저 안에서만 쓰는 임시 주소 (blob:...)
+    let currentFileName = ""; // 지금 연 파일 이름 (기록에 함께 저장)
+    let currentClub = loadClub(); // 지금 분석하는 클럽 ("driver" / "wood" / "iron" / "wedge")
+
+    // history: 저장된 스윙 기록 목록 (새 기록이 맨 앞)
+    //  예) history[0] = { date: "2026-10-23T10:00:00", memo: "연습장", view: "face",
+    //                     values: { spineAddr: 35, leadArmTop: 170, ... }, warnings: ["치킨윙"], thumb: "data:image/jpeg..." }
+    let history = loadHistory();
+
+    // 각 구간이 몇 번째 프레임인지 (예: { address: 3, top: 25, impact: 34, finish: 60 })
+    let phases = { address: -1, top: -1, impact: -1, finish: -1 };
+
+    // MediaPipe 영상 모드는 "시간표(타임스탬프)"가 항상 증가해야 해서 따로 셉니다.
+    let timestampMs = 0;
+
+    // ----------------------------------------------------------
+    // [3] 화면 요소 가져오기 (HTML의 id로 찾기)
+    // ----------------------------------------------------------
+    const fileInput      = document.getElementById("fileInput");
+    const viewSelect     = document.getElementById("viewSelect");
+    const handSelect     = document.getElementById("handSelect");
+    const modelSelect    = document.getElementById("modelSelect");
+    const fpsSelect      = document.getElementById("fpsSelect");
+    const startInput     = document.getElementById("startInput");
+    const endInput       = document.getElementById("endInput");
+    const analyzeBtn     = document.getElementById("analyzeBtn");
+    const statusText     = document.getElementById("statusText");
+    const progressBar    = document.getElementById("progressBar");
+    const viewNotice     = document.getElementById("viewNotice");
+    const mediaWrap      = document.getElementById("mediaWrap");
+    const placeholder    = document.getElementById("placeholder");
+    const mediaBox       = document.getElementById("mediaBox");
+    const video          = document.getElementById("video");
+    const photo          = document.getElementById("photo");
+    const overlay        = document.getElementById("overlay");
+    const ctx            = overlay.getContext("2d"); // 캔버스에 그림을 그리는 "붓"
+    const prevFrameBtn   = document.getElementById("prevFrameBtn");
+    const nextFrameBtn   = document.getElementById("nextFrameBtn");
+    const rateSelect     = document.getElementById("rateSelect");
+    const skeletonCheck  = document.getElementById("skeletonCheck");
+    const frameInfo      = document.getElementById("frameInfo");
+    const phaseTableBody = document.getElementById("phaseTableBody");
+    const autoPhaseBtn   = document.getElementById("autoPhaseBtn");
+    const phaseWarning   = document.getElementById("phaseWarning");
+    const metricTableBody= document.getElementById("metricTableBody");
+    const diagTableBody  = document.getElementById("diagTableBody");
+    const proSelect      = document.getElementById("proSelect");
+    const proSummary     = document.getElementById("proSummary");
+    const proTableBody   = document.getElementById("proTableBody");
+    const memoInput      = document.getElementById("memoInput");
+    const recordBtn      = document.getElementById("recordBtn");
+    const recordMsg      = document.getElementById("recordMsg");
+    const historyTableBody = document.getElementById("historyTableBody");
+    const clearHistoryBtn  = document.getElementById("clearHistoryBtn");
+    const historyNote      = document.getElementById("historyNote");
+
+    // ----------------------------------------------------------
+    // [4] 자세 추정 라이브러리 불러오기 (인터넷 필요)
+    // ----------------------------------------------------------
+
+    // 상태 표시줄에 글자를 씁니다. type: "ok" | "error" | ""(보통)
+    function setStatus(text, type) {
+      statusText.textContent = text;
+      statusText.className = "status " + (type || "");
+    }
+
+    // 라이브러리 → WebAssembly → AI 모델 순서로 불러옵니다.
+    // await: "이 작업이 끝날 때까지 기다렸다가 다음 줄 실행" 이라는 뜻
+    async function loadLibrary() {
+      setStatus("⏳ 자세 추정 라이브러리를 불러오는 중… (인터넷 연결 필요)");
+      try {
+        visionLib = await import(LIB_URL);                                   // ① 라이브러리 코드
+        fileset = await visionLib.FilesetResolver.forVisionTasks(WASM_URL);  // ② WebAssembly
+        await ensureLandmarker();                                            // ③ AI 모델
+      } catch (e) {
+        console.error(e);
+        setStatus("❌ 라이브러리/모델을 불러오지 못했습니다. 처음 한 번은 인터넷이 필요합니다. 연결을 확인한 뒤 앱을 다시 여세요. " +
+                  "(영상 재생은 되지만 자세 분석은 할 수 없습니다)", "error");
+        return;
+      }
+      updateAnalyzeButton();
+    }
+
+    // 선택한 모델(lite/full)로 자세 추정기를 만듭니다. 이미 같은 모델이면 그대로 씁니다.
+    async function ensureLandmarker() {
+      const modelKey = modelSelect.value;
+      if (landmarker && loadedModel === modelKey) return;
+      if (!fileset) throw new Error("라이브러리가 아직 없습니다");
+
+      setStatus("⏳ AI 모델(" + modelKey + ")을 내려받는 중…");
+      if (landmarker) landmarker.close(); // 이전 모델은 메모리에서 정리
+
+      // 옵션을 만드는 작은 함수. delegate: "GPU"(그래픽카드, 빠름) 또는 "CPU"
+      const makeOptions = function (delegate) {
+        return {
+          baseOptions: { modelAssetPath: MODEL_URLS[modelKey], delegate: delegate },
+          runningMode: "VIDEO",          // 연속된 프레임(영상)을 처리하는 모드
+          numPoses: 1,                   // 한 사람만 찾기
+          minPoseDetectionConfidence: 0.5,
+          minPosePresenceConfidence: 0.5,
+          minTrackingConfidence: 0.5
+        };
+      };
+      try {
+        landmarker = await visionLib.PoseLandmarker.createFromOptions(fileset, makeOptions("GPU"));
+      } catch (e) {
+        // GPU를 못 쓰는 컴퓨터면 CPU로 다시 시도 (조금 느림)
+        landmarker = await visionLib.PoseLandmarker.createFromOptions(fileset, makeOptions("CPU"));
+      }
+      loadedModel = modelKey;
+      setStatus("✅ 자세 추정 준비 완료 (MediaPipe " + LIB_VERSION + ", " + modelKey + " 모델)", "ok");
+    }
+
+    // 분석 버튼은 "라이브러리 준비 + 파일 열림 + 분석 중 아님" 일 때만 누를 수 있게
+    function updateAnalyzeButton() {
+      analyzeBtn.disabled = !(fileset && mediaReady && !analyzing);
+      // 기록하기 버튼은 "분석 결과가 있고 분석 중이 아닐 때"만
+      recordBtn.disabled = !(frames.length > 0 && phases.address >= 0 && !analyzing);
+      updateTouchButtons();   // 공·클럽헤드 터치 버튼들
+    }
+
+    // ----------------------------------------------------------
+    // [5] 내 컴퓨터의 영상/사진 파일 열기
+    // ----------------------------------------------------------
+    // URL.createObjectURL(file) 은 파일을 "서버에 올리지 않고"
+    // 브라우저 안에서만 쓰는 임시 주소(blob:...)를 만들어 줍니다.
+    function openFile(file) {
+      if (!file) return;
+      if (objectUrl) URL.revokeObjectURL(objectUrl); // 이전 파일의 임시 주소 정리
+      objectUrl = URL.createObjectURL(file);
+      currentFileName = file.name;
+      recordMsg.textContent = "";
+
+      // 이전 분석 결과 지우기
+      frames = [];
+      phases = { address: -1, top: -1, impact: -1, finish: -1 };
+      mediaReady = false;
+      resetTouch();          // 공·클럽헤드 터치 기록도 지우기
+      updateAnalyzeButton();
+      renderAll();
+
+      placeholder.style.display = "none";
+      mediaBox.style.display = "block";
+
+      if (file.type.startsWith("image/")) {
+        // ── 사진 ──
+        isImage = true;
+        video.pause();
+        video.removeAttribute("src");
+        video.style.display = "none";
+        photo.style.display = "block";
+        photo.onload = function () {
+          mediaW = photo.naturalWidth;
+          mediaH = photo.naturalHeight;
+          setupCanvas();
+          mediaReady = true;
+          startInput.disabled = endInput.disabled = true;
+          updateAnalyzeButton();
+        };
+        photo.src = objectUrl;
+      } else {
+        // ── 영상 ──
+        isImage = false;
+        photo.style.display = "none";
+        video.style.display = "block";
+        video.onloadeddata = async function () {
+          await ensureDuration();          // 일부 영상은 길이를 바로 못 알려 줘서 확인
+          mediaW = video.videoWidth;
+          mediaH = video.videoHeight;
+          setupCanvas();
+          startInput.disabled = endInput.disabled = false;
+          startInput.value = 0;
+          // 기본 분석 범위: 처음 ~ 최대 10초
+          endInput.value = Math.min(video.duration, 10).toFixed(1);
+          mediaReady = true;
+          updateAnalyzeButton();
+          if (video.duration > 10) {
+            setStatus("ℹ️ 영상이 " + video.duration.toFixed(1) + "초로 깁니다. 스윙이 있는 부분으로 시작/끝 시간을 맞춰 주세요.");
+          }
+        };
+        video.src = objectUrl;
+        video.playbackRate = Number(rateSelect.value);
+      }
+    }
+
+    // 캔버스(뼈대 그림판) 크기를 영상의 실제 픽셀 크기와 같게 맞춥니다.
+    function setupCanvas() {
+      overlay.width = mediaW;
+      overlay.height = mediaH;
+    }
+
+    // 휴대폰/웹에서 녹화한 일부 영상(webm)은 길이(duration)가 "무한대"로 나옵니다.
+    // 끝으로 한 번 이동해 보면 진짜 길이를 알 수 있어서 그 요령을 씁니다.
+    async function ensureDuration() {
+      if (isFinite(video.duration)) return;
+      await new Promise(function (resolve) {
+        video.addEventListener("durationchange", function handler() {
+          if (isFinite(video.duration)) {
+            video.removeEventListener("durationchange", handler);
+            resolve();
+          }
+        });
+        video.currentTime = 1e9; // 아주 큰 값 → 영상 끝으로
+      });
+      await seekTo(0);
+    }
+
+    // 영상을 t초 위치로 옮기고, 그 장면이 준비될 때까지 기다립니다.
+    function seekTo(t) {
+      return new Promise(function (resolve) {
+        if (Math.abs(video.currentTime - t) < 0.0005) { resolve(); return; }
+        video.addEventListener("seeked", function () { resolve(); }, { once: true });
+        video.currentTime = t;
+      });
+    }
+
+    // ----------------------------------------------------------
+    // [6] 자세 분석 (프레임을 하나씩 넘기며 관절 찾기)
+    // ----------------------------------------------------------
+    async function analyze() {
+      if (analyzing || !mediaReady) return;
+      analyzing = true;
+      updateAnalyzeButton();
+      try {
+        await ensureLandmarker();            // 모델을 바꿨다면 새로 불러오기
+        fps = Number(fpsSelect.value);
+        frames = [];
+        progressBar.style.display = "block";
+        progressBar.value = 0;
+
+        if (isImage) {
+          // ── 사진: 한 장만 분석 ──
+          timestampMs += 1000;
+          const result = landmarker.detectForVideo(photo, timestampMs);
+          frames.push(makeFrame(0, result));
+        } else {
+          // ── 영상: 시작~끝을 (1/fps)초 간격으로 넘기며 분석 ──
+          video.pause();
+          const start = Math.max(0, Number(startInput.value) || 0);
+          let end = Number(endInput.value) || video.duration;
+          end = Math.min(end, video.duration);
+          if (end <= start) { showToast("분석 끝 시간이 시작 시간보다 커야 합니다."); return; }
+
+          const step = 1 / fps;
+          const total = Math.floor((end - start) / step) + 1;
+          for (let i = 0; i < total; i++) {
+            const t = start + i * step;
+            await seekTo(t);                                   // 그 시간으로 이동
+            timestampMs += Math.max(1, Math.round(1000 / fps)); // 시간표는 항상 증가
+            const result = landmarker.detectForVideo(video, timestampMs); // 관절 찾기
+            frames.push(makeFrame(t, result));
+            progressBar.value = Math.round((i + 1) / total * 100);
+            setStatus("🔍 분석 중… " + (i + 1) + " / " + total + " 프레임");
+          }
+        }
+
+        // 사람을 몇 프레임에서 찾았는지 세기
+        const found = frames.filter(function (f) { return f.lm; }).length;
+        if (found === 0) {
+          setStatus("⚠️ 사람을 찾지 못했습니다. 몸 전체가 보이고 밝은 영상인지 확인하세요.", "error");
+          return;
+        }
+
+        // 흔들림 줄이기 → 구간 자동 찾기 → 표 그리기
+        smoothAllFrames();
+        if (isImage) {
+          phases = { address: 0, top: 0, impact: 0, finish: 0 };
+        } else {
+          autoDetectPhases();
+          await seekTo(frames[phases.address].t); // 어드레스 장면으로 이동
+        }
+        renderAll();
+        setStatus("✅ 분석 완료: " + frames.length + "프레임 중 " + found + "프레임에서 사람을 찾았습니다.", "ok");
+      } catch (e) {
+        console.error(e);
+        setStatus("❌ 분석 중 오류가 났습니다: " + e.message, "error");
+      } finally {
+        // finally: 성공하든 실패하든 마지막에 꼭 실행
+        analyzing = false;
+        progressBar.style.display = "none";
+        updateAnalyzeButton();
+      }
+    }
+
+    // MediaPipe 결과를 이 앱의 프레임 형식으로 바꿉니다. (사람이 없으면 lm = null)
+    function makeFrame(t, result) {
+      return {
+        t: t,
+        lm: (result.landmarks && result.landmarks[0]) ? result.landmarks[0] : null,
+        world: (result.worldLandmarks && result.worldLandmarks[0]) ? result.worldLandmarks[0] : null
+      };
+    }
+
+    // ----------------------------------------------------------
+    // [7] 흔들림 줄이기 (앞뒤 프레임과 평균내기)
+    // ----------------------------------------------------------
+    // AI가 찾은 관절 위치는 프레임마다 조금씩 떨립니다.
+    // 앞·뒤 1프레임과 평균을 내면(이동 평균) 그래프가 부드러워집니다.
+    function smoothAllFrames() {
+      const smoothLm = smoothList("lm");
+      const smoothWorld = smoothList("world");
+      frames.forEach(function (f, i) {
+        f.lm = smoothLm[i];
+        f.world = smoothWorld[i];
+      });
+    }
+
+    function smoothList(key) {
+      return frames.map(function (f, i) {
+        if (!f[key]) return null;
+        return f[key].map(function (p, j) {
+          let sx = 0, sy = 0, sz = 0, count = 0;
+          for (let k = i - 1; k <= i + 1; k++) {
+            const g = frames[k];
+            if (!g || !g[key]) continue;  // 앞뒤 프레임이 없으면 건너뜀
+            sx += g[key][j].x; sy += g[key][j].y; sz += g[key][j].z; count++;
+          }
+          return { x: sx / count, y: sy / count, z: sz / count, visibility: p.visibility };
+        });
+      });
+    }
+
+    // ----------------------------------------------------------
+    // [8] 스윙 구간 자동 찾기
+    // ----------------------------------------------------------
+    // 생각의 흐름:
+    //  ① 손(양 손목의 가운데)이 "가장 빠르게 내려가는" 순간 = 다운스윙 한가운데
+    //  ② 그 전까지 손이 가장 높았던 순간 = 백스윙 탑
+    //  ③ 그 직후 손이 가장 낮은 순간 = 임팩트 근처
+    //  ④ 탑 이전에 손이 낮게 멈춰 있다가 움직이기 시작하는 순간 = 어드레스(테이크어웨이 직전)
+    //  ⑤ 임팩트 이후 손이 가장 높은 순간 = 피니시
+    // ※ 화면의 y 값은 아래로 갈수록 커집니다. (y가 작을수록 높은 곳)
+    function autoDetectPhases() {
+      const n = frames.length;
+      if (n < 5) { phases = { address: 0, top: 0, impact: n - 1, finish: n - 1 }; return; }
+
+      // 프레임마다 손 높이(y, 픽셀) 구하기. 사람을 못 찾은 프레임은 앞 값으로 채움
+      const handY = [], handX = [];
+      let last = null, lastX = null;
+      frames.forEach(function (f) {
+        if (f.lm) {
+          last = (f.lm[LM.L_WR].y + f.lm[LM.R_WR].y) / 2 * mediaH;
+          lastX = (f.lm[LM.L_WR].x + f.lm[LM.R_WR].x) / 2 * mediaW;   // 좌우 위치 (어드레스 찾기용)
+        }
+        handY.push(last);
+        handX.push(lastX);
+      });
+      // 맨 앞이 비어 있으면 처음 찾은 값으로 채움
+      const firstValue = handY.find(function (v) { return v !== null; });
+      const firstX = handX.find(function (v) { return v !== null; });
+      for (let i = 0; i < n && handY[i] === null; i++) { handY[i] = firstValue; handX[i] = firstX; }
+
+      // ① 손이 아래로 내려가는 속도 (다음 프레임 y - 이전 프레임 y)
+      let fastest = 1, fastestSpeed = -Infinity;
+      for (let i = 1; i < n - 1; i++) {
+        const speed = handY[i + 1] - handY[i - 1];
+        if (speed > fastestSpeed) { fastestSpeed = speed; fastest = i; }
+      }
+
+      // ② 탑: 0 ~ fastest 사이에서 손이 가장 높은(y가 가장 작은) 높이를 찾고,
+      //    그 높이 근처(몸통 길이의 5% 이내)에 머문 "마지막" 프레임.
+      //    탑에서 잠깐 멈추는 사람은 손이 한동안 그 높이에 머무르므로, 다운스윙이 시작되기 직전을 탑으로 봅니다.
+      const highest = argBest(handY, 0, fastest, function (a, b) { return a < b; });
+      const topTol = 0.05 * torsoLength(highest);
+      let top = highest;
+      for (let i = highest; i < fastest; i++) {
+        if (handY[i] <= handY[highest] + topTol) top = i; else break;
+      }
+
+      // ③ 임팩트: fastest 부터 약 0.25초 안에서 손이 가장 낮은(y가 가장 큰) 프레임
+      const impact = argBest(handY, fastest, Math.min(n - 1, fastest + Math.round(0.25 * fps)),
+                             function (a, b) { return a > b; });
+
+      // ④ 어드레스: 탑 이전에서 손이 가장 낮던 위치를 기준으로,
+      //    그 위치 근처(몸통 길이의 5% 이내)에 머물던 "마지막" 프레임.
+      //    측면 영상의 테이크어웨이는 손이 옆으로 먼저 움직이므로 위아래와 좌우를 함께 봅니다.
+      const lowest = argBest(handY, 0, top, function (a, b) { return a > b; });
+      const tolerance = 0.05 * torsoLength(lowest);
+      let address = lowest;
+      for (let i = lowest; i <= top; i++) {
+        const moved = Math.hypot(handX[i] - handX[lowest], handY[i] - handY[lowest]);
+        if (moved <= tolerance) address = i; else break;
+      }
+
+      // ⑤ 피니시: 임팩트 이후 손이 가장 높은 프레임
+      let finish = argBest(handY, impact, n - 1, function (a, b) { return a < b; });
+      if (finish === impact) finish = n - 1;
+
+      phases = { address: address, top: top, impact: impact, finish: finish };
+    }
+
+    // 배열 values 의 from~to 구간에서 better(a, b)가 참인 "가장 좋은" 값의 위치를 찾습니다.
+    function argBest(values, from, to, better) {
+      let best = from;
+      for (let i = from; i <= to; i++) {
+        if (values[i] !== null && better(values[i], values[best])) best = i;
+      }
+      return best;
+    }
+
+    // ----------------------------------------------------------
+    // [9] 각도 계산 도우미 (중학교 수학의 삼각함수 활용)
+    // ----------------------------------------------------------
+
+    // 리드(앞쪽) 쪽 / 트레일(뒤쪽) 쪽 관절 번호
+    // 오른손잡이는 몸의 왼쪽이 타깃(목표) 쪽이므로 왼쪽이 "리드" 입니다.
+    function sides() {
+      const L = { sh: LM.L_SH, el: LM.L_EL, wr: LM.L_WR, hip: LM.L_HIP, kn: LM.L_KN, an: LM.L_AN };
+      const R = { sh: LM.R_SH, el: LM.R_EL, wr: LM.R_WR, hip: LM.R_HIP, kn: LM.R_KN, an: LM.R_AN };
+      return handSelect.value === "right" ? { lead: L, trail: R } : { lead: R, trail: L };
+    }
+
+    // i번째 프레임의 관절 j 위치를 "픽셀" 단위로 돌려줍니다. (없으면 null)
+    function pt(i, j) {
+      const f = frames[i];
+      if (!f || !f.lm) return null;
+      return { x: f.lm[j].x * mediaW, y: f.lm[j].y * mediaH };
+    }
+
+    // 두 점의 가운데
+    function mid(a, b) { return { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 }; }
+
+    // 두 점 사이 거리 (피타고라스 정리)
+    function dist(a, b) { return Math.hypot(a.x - b.x, a.y - b.y); }
+
+    // 라디안 → 도(°)
+    function deg(rad) { return rad * 180 / Math.PI; }
+
+    // 세 점 a-b-c 에서 b 를 꼭짓점으로 하는 각도 (0~180°)
+    // 예) 어깨-팔꿈치-손목 → 팔꿈치 각도 (180° 면 팔이 쭉 펴진 상태)
+    function angleAt(a, b, c) {
+      const v1 = { x: a.x - b.x, y: a.y - b.y };
+      const v2 = { x: c.x - b.x, y: c.y - b.y };
+      const dot = v1.x * v2.x + v1.y * v2.y;                  // 내적
+      const len = Math.hypot(v1.x, v1.y) * Math.hypot(v2.x, v2.y);
+      if (len === 0) return null;
+      return deg(Math.acos(Math.max(-1, Math.min(1, dot / len))));
+    }
+
+    // 몸통 길이 (골반 가운데 ~ 어깨 가운데, 픽셀). 이동량을 "몸 크기 대비 %" 로 바꿀 때 사용
+    function torsoLength(i) {
+      const ls = pt(i, LM.L_SH), rs = pt(i, LM.R_SH), lh = pt(i, LM.L_HIP), rh = pt(i, LM.R_HIP);
+      if (!ls) return mediaH * 0.3;
+      return dist(mid(ls, rs), mid(lh, rh)) || mediaH * 0.3;
+    }
+
+    // ----------------------------------------------------------
+    // [10] 구간별 측정값 계산
+    // ----------------------------------------------------------
+
+    // (10-1) 척추 기울기: 골반 가운데 → 어깨 가운데 선이 "수직선"에서 몇 도 기울었는지
+    //   측면 촬영: 앞으로 숙인 각도 / 정면 촬영: 옆으로 기운 각도
+    function spineTilt(i) {
+      const ls = pt(i, LM.L_SH), rs = pt(i, LM.R_SH), lh = pt(i, LM.L_HIP), rh = pt(i, LM.R_HIP);
+      if (!ls) return null;
+      const s = mid(ls, rs), h = mid(lh, rh);
+      return deg(Math.atan2(Math.abs(s.x - h.x), h.y - s.y));
+    }
+
+    // (10-2) 리드 팔 각도: 어깨-팔꿈치-손목 (180° = 완전히 폄)
+    function leadArm(i) {
+      const s = sides().lead;
+      const a = pt(i, s.sh), b = pt(i, s.el), c = pt(i, s.wr);
+      return a ? angleAt(a, b, c) : null;
+    }
+
+    // (10-3) 무릎 굽힘: 180° - (골반-무릎-발목 각도). 0° = 다리를 쭉 편 상태
+    function kneeFlex(i, side) {
+      const a = pt(i, side.hip), b = pt(i, side.kn), c = pt(i, side.an);
+      if (!a) return null;
+      const ang = angleAt(a, b, c);
+      return ang === null ? null : 180 - ang;
+    }
+
+    // (10-4) 회전량: 어드레스 프레임(a) 대비 i 프레임에서 두 관절을 이은 선이 몇 도 돌았는지
+    //   정면 촬영: 선이 돌아가면 화면에서 "짧아 보이는" 원리 이용 → acos(지금 길이 / 처음 길이)
+    //              (90°를 넘는 회전은 구분할 수 없음)
+    //   측면 촬영: MediaPipe가 추정한 3D 좌표(world)의 위에서 본 각도 변화 이용 (오차 큼)
+    function rotation(a, i, j1, j2) {
+      if (viewSelect.value === "face") {
+        const p1 = pt(a, j1), p2 = pt(a, j2), q1 = pt(i, j1), q2 = pt(i, j2);
+        if (!p1 || !q1) return null;
+        const w0 = Math.abs(p1.x - p2.x), w1 = Math.abs(q1.x - q2.x);
+        if (w0 === 0) return null;
+        return deg(Math.acos(Math.min(1, w1 / w0)));
+      }
+      const fa = frames[a].world, fi = frames[i].world;
+      if (!fa || !fi) return null;
+      const angA = Math.atan2(fa[j2].z - fa[j1].z, fa[j2].x - fa[j1].x);
+      const angI = Math.atan2(fi[j2].z - fi[j1].z, fi[j2].x - fi[j1].x);
+      let diff = deg(angI - angA);
+      diff = ((diff + 540) % 360) - 180;      // -180 ~ 180 범위로 정리
+      return Math.abs(diff);
+    }
+
+    // (10-5) 머리(코) 좌우 이동: 어드레스 대비, 어깨폭의 몇 %인지. +는 타깃 쪽, -는 타깃 반대쪽
+    function headLateral(a, i) {
+      const s = sides();
+      const n0 = pt(a, LM.NOSE), n1 = pt(i, LM.NOSE);
+      const lead = pt(a, s.lead.sh), trail = pt(a, s.trail.sh);
+      if (!n0 || !n1) return null;
+      const width = Math.abs(lead.x - trail.x);
+      if (width < 1) return null;
+      const targetDir = Math.sign(lead.x - trail.x);  // 화면에서 타깃 쪽이 +x 인지 -x 인지
+      return (n1.x - n0.x) * targetDir / width * 100;
+    }
+
+    // (10-6) 머리 상하 이동: 어드레스 대비, 몸통 길이의 몇 %. +는 아래로(낮아짐), -는 위로
+    function headVertical(a, i) {
+      const n0 = pt(a, LM.NOSE), n1 = pt(i, LM.NOSE);
+      if (!n0 || !n1) return null;
+      return (n1.y - n0.y) / torsoLength(a) * 100;
+    }
+
+    // (10-7) 골반이 공 쪽으로 나온 정도 (측면 촬영용): 몸통 길이의 몇 %. +는 공 쪽
+    //   공 방향은 "어드레스 때 코가 골반보다 앞쪽(공 쪽)에 있다"는 점으로 알아냅니다.
+    function hipTowardBall(a, i) {
+      const p0 = pt(a, LM.L_HIP), p1 = pt(i, LM.L_HIP);
+      if (!p0 || !p1) return null;
+      const h0 = mid(p0, pt(a, LM.R_HIP));
+      const h1 = mid(p1, pt(i, LM.R_HIP));
+      const ballDir = Math.sign(pt(a, LM.NOSE).x - h0.x) || 1;
+      return (h1.x - h0.x) * ballDir / torsoLength(a) * 100;
+    }
+
+    // 모든 측정값을 한 번에 계산해서 객체 M 으로 돌려줍니다.
+    //  예) M.spine.address = 38  → 어드레스 때 척추 기울기 38°
+    function computeMetrics() {
+      const M = {};
+      const p = phases;
+      if (!frames.length || p.address < 0) return null;
+      const s = sides();
+      const forPhases = function (fn) {
+        const out = {};
+        PHASES.forEach(function (ph) {
+          // 사진은 장면이 하나뿐이라 "어드레스" 칸에만 값을 넣습니다.
+          out[ph.key] = (isImage && ph.key !== "address") ? null : fn(p[ph.key]);
+        });
+        return out;
+      };
+      const a = p.address;
+
+      M.spine     = forPhases(spineTilt);
+      M.leadArm   = forPhases(leadArm);
+      M.kneeLead  = forPhases(function (i) { return kneeFlex(i, s.lead); });
+      M.kneeTrail = forPhases(function (i) { return kneeFlex(i, s.trail); });
+      M.shoulder  = forPhases(function (i) { return rotation(a, i, LM.L_SH, LM.R_SH); });
+      M.hip       = forPhases(function (i) { return rotation(a, i, LM.L_HIP, LM.R_HIP); });
+      M.headX     = forPhases(function (i) { return headLateral(a, i); });
+      M.headY     = forPhases(function (i) { return headVertical(a, i); });
+      M.hipBall   = forPhases(function (i) { return hipTowardBall(a, i); });
+
+      // X-팩터 근사값 = 탑에서 (어깨 회전 - 골반 회전)
+      M.xFactor = (M.shoulder.top !== null && M.hip.top !== null) ? M.shoulder.top - M.hip.top : null;
+
+      // 임팩트 직후 약 0.2초 동안 리드 팔이 가장 많이 굽은 각도 (치킨윙 확인용)
+      M.followArm = null;
+      //  (손이 어깨 높이보다 올라가면 팔이 자연스럽게 접히는 피니시 동작이라 거기서 멈춤)
+      const endFollow = Math.min(p.finish, p.impact + Math.max(2, Math.round(0.1 * fps)));
+      for (let i = p.impact; i <= endFollow; i++) {
+        const ls = pt(i, LM.L_SH), rs = pt(i, LM.R_SH), lw = pt(i, LM.L_WR), rw = pt(i, LM.R_WR);
+        if (ls && (lw.y + rw.y) / 2 < (ls.y + rs.y) / 2) break;
+        const v = leadArm(i);
+        if (v !== null && (M.followArm === null || v < M.followArm)) M.followArm = v;
+      }
+
+      // 템포: 백스윙 시간(어드레스→탑) ÷ 다운스윙 시간(탑→임팩트)
+      const back = frames[p.top].t - frames[a].t;
+      const down = frames[p.impact].t - frames[p.top].t;
+      M.tempo = { back: back, down: down, ratio: down > 0 ? back / down : null };
+
+      // 사진 한 장이면 "움직임"을 비교할 수 없으므로 움직임 관련 값은 모두 비웁니다.
+      if (isImage) {
+        const empty = { address: null, top: null, impact: null, finish: null };
+        M.shoulder = M.hip = M.headX = M.headY = M.hipBall = empty;
+        M.xFactor = null;
+        M.followArm = null;
+        M.tempo.ratio = null;
+      }
+      return M;
+    }
+
+    // ----------------------------------------------------------
+    // [11] 흔한 실수 진단
+    // ----------------------------------------------------------
+    // 결과(status): "good"(양호) / "warn"(주의) / "na"(판단 불가)
+    function diagnose(M) {
+      const view = viewSelect.value;
+      const rows = [];
+      const needVideo = "사진 한 장으로는 움직임을 알 수 없습니다. 영상을 올려 주세요.";
+
+      // (11-1) 어드레스 자세 (사진으로도 확인 가능)
+      {
+        const knee = avg(M.kneeLead.address, M.kneeTrail.address);
+        const spine = M.spine.address;
+        const ref = view === "dtl" ? clubProfile().spineDtl : clubProfile().spineFace;
+        const kneeOk = inRange(knee, REF.kneeAddress, 5);
+        const spineOk = inRange(spine, ref, 5);
+        rows.push({
+          name: "어드레스 자세",
+          status: (knee === null || spine === null) ? "na" : (kneeOk && spineOk ? "good" : "warn"),
+          value: "무릎 굽힘 평균 " + fmt(knee, "°") + ", 척추 " + fmt(spine, "°"),
+          desc: (view === "dtl"
+            ? clubProfile().name + " 어드레스는 측면에서 상체를 엉덩이부터 숙이고(약 " + ref.min + "~" + ref.max + "°) 무릎을 살짝(약 15~30°) 굽힌 자세가 흔히 권장됩니다. "
+            : clubProfile().name + " 어드레스는 정면에서 척추가 타깃 반대쪽으로 살짝(약 " + ref.min + "~" + ref.max + "°) 기우는 것이 일반적입니다. 클럽이 짧을수록 덜 기웁니다. 앞숙임은 측면 영상으로 확인하세요. ") +
+            "무릎을 너무 많이 굽히면 앉은 자세가, 너무 펴면 회전이 뻣뻣해지기 쉽습니다."
+        });
+      }
+
+      // (11-2) 치킨윙: 임팩트 이후 리드 팔꿈치가 닭 날개처럼 접힘
+      if (isImage) {
+        rows.push({ name: "치킨윙", status: "na", value: "-", desc: needVideo });
+      } else if (view === "dtl") {
+        rows.push({ name: "치킨윙", status: "na", value: "측면 영상은 임팩트 후 팔이 화면 안쪽으로 뻗어 각도가 크게 왜곡됨",
+                    desc: "임팩트 뒤 리드 팔꿈치가 접히는지는 정면 촬영 영상으로 확인하세요." });
+      } else {
+        const v = M.followArm;
+        rows.push({
+          name: "치킨윙",
+          status: v === null ? "na" : (v < LIMIT.chickenWing ? "warn" : "good"),
+          value: "임팩트 직후 리드 팔 최소 " + fmt(v, "°") + (view === "dtl" ? " (측면은 팔이 겹쳐 오차 큼)" : ""),
+          desc: "임팩트 뒤에 리드 팔꿈치가 굽으며 몸 쪽으로 빠지는 동작입니다. 몸 회전이 멈추거나 손으로만 치면 생기기 쉽습니다. " +
+                "연습: 하프 스윙으로 임팩트 후 양팔을 뻗은 채 몸통으로 돌려 주는 연습, 리드 겨드랑이에 수건을 끼우고 치기."
+        });
+      }
+
+      // (11-3) 머리 스웨이: 백스윙 때 머리가 타깃 반대쪽으로 크게 밀림 (정면 촬영만 판단)
+      if (isImage) {
+        rows.push({ name: "머리 스웨이", status: "na", value: "-", desc: needVideo });
+      } else if (view !== "face") {
+        rows.push({ name: "머리 스웨이", status: "na", value: "측면 영상은 좌우 이동이 보이지 않음",
+                    desc: "좌우(타깃 방향) 이동은 정면 촬영 영상으로만 확인할 수 있습니다." });
+      } else {
+        const sway = M.headX.top === null ? null : -M.headX.top; // 타깃 반대쪽 이동을 +로
+        rows.push({
+          name: "머리 스웨이",
+          status: sway === null ? "na" : (sway > LIMIT.sway ? "warn" : "good"),
+          value: "탑에서 머리가 타깃 반대쪽으로 어깨폭의 " + fmt(sway, "%") + " 이동",
+          desc: "백스윙 때 몸이 회전하지 않고 옆으로 밀리는 동작입니다. 약간의 이동은 자연스럽지만 크면 임팩트 위치가 들쭉날쭉해집니다. " +
+                "연습: 트레일 발 바깥쪽에 막대(또는 의자)를 두고 골반이 밀리지 않게 회전하기."
+        });
+      }
+
+      // (11-4) 얼리 익스텐션: 다운스윙 때 골반이 공 쪽으로 나오며 상체가 일어섬 (측면 촬영만 판단)
+      if (isImage) {
+        rows.push({ name: "얼리 익스텐션", status: "na", value: "-", desc: needVideo });
+      } else if (view !== "dtl") {
+        rows.push({ name: "얼리 익스텐션", status: "na", value: "정면 영상은 앞뒤 이동이 보이지 않음",
+                    desc: "골반이 공 쪽으로 나오는지는 측면(뒤쪽 비구선) 촬영 영상으로만 확인할 수 있습니다." });
+      } else {
+        const hip = M.hipBall.impact;
+        const loss = (M.spine.address !== null && M.spine.impact !== null) ? M.spine.address - M.spine.impact : null;
+        const warn = (hip !== null && hip > LIMIT.hipToBall) || (loss !== null && loss > LIMIT.spineLoss);
+        rows.push({
+          name: "얼리 익스텐션",
+          status: (hip === null && loss === null) ? "na" : (warn ? "warn" : "good"),
+          value: "골반 공 쪽 이동 " + fmt(hip, "%") + ", 척추 앞숙임 변화 " + fmt(loss === null ? null : -loss, "°"),
+          desc: "다운스윙에서 엉덩이가 공 쪽으로 밀려 나오고 상체가 일어서는 동작입니다. 생크·푸시·훅이 나기 쉽습니다. " +
+                "연습: 엉덩이 뒤에 의자를 두고 임팩트까지 엉덩이가 의자에 닿아 있도록 스윙하기."
+        });
+      }
+
+      // (11-5) 오버스윙: 클럽이 지나치게 넘어감 → 클럽을 추적하지 않으므로 리드 팔 굽힘으로 간접 추정
+      if (isImage) {
+        rows.push({ name: "오버스윙 (간접 추정)", status: "na", value: "-", desc: needVideo });
+      } else {
+        const v = M.leadArm.top;
+        rows.push({
+          name: "오버스윙 (간접 추정)",
+          status: v === null ? "na" : (v < LIMIT.overswingArm ? "warn" : "good"),
+          value: "탑에서 리드 팔 " + fmt(v, "°"),
+          desc: "이 앱은 클럽을 보지 못해서, 백스윙 탑에서 리드 팔꿈치가 많이 굽는 경우(오버스윙의 흔한 원인)를 의심 신호로 봅니다. " +
+                "클럽이 지면과 평행을 넘는지는 영상을 직접 확인하세요. 연습: 거울 앞에서 ¾ 백스윙으로 멈추기."
+        });
+      }
+
+      // (11-6) 트레일 무릎 펴짐: 백스윙 때 뒤쪽 무릎이 쭉 펴짐
+      if (!isImage) {
+        const loss = (M.kneeTrail.address !== null && M.kneeTrail.top !== null) ? M.kneeTrail.address - M.kneeTrail.top : null;
+        rows.push({
+          name: "백스윙 때 트레일 무릎 펴짐",
+          status: loss === null ? "na" : (loss > LIMIT.kneeStraighten ? "warn" : "good"),
+          value: "무릎 굽힘 변화 " + fmt(loss === null ? null : -loss, "°"),
+          desc: "뒤쪽 무릎이 많이 펴지면 골반이 과하게 돌고 몸이 일어서기 쉽습니다. 다만 조금 펴지는 것은 많은 선수에게서 보이는 자연스러운 움직임입니다."
+        });
+      }
+
+      // (11-7) 머리 높이 변화: 임팩트 때 머리가 크게 오르내림
+      if (!isImage) {
+        const v = M.headY.impact;
+        rows.push({
+          name: "임팩트 때 머리 높이 변화",
+          status: v === null ? "na" : (Math.abs(v) > LIMIT.headVertical ? "warn" : "good"),
+          value: v === null ? "-" : (v >= 0 ? "아래로 " : "위로 ") + fmt(Math.abs(v), "%") + " (몸통 길이 대비)",
+          desc: "머리가 크게 올라가면(일어섬) 토핑, 크게 내려가면(주저앉음) 뒤땅이 나기 쉽습니다. 약간 낮아지는 것은 흔한 움직임입니다."
+        });
+      }
+
+      // (11-8) 템포
+      if (!isImage) {
+        const r = M.tempo.ratio;
+        rows.push({
+          name: "템포 (백스윙 : 다운스윙)",
+          status: r === null ? "na" : (r < 2.2 || r > 4 ? "warn" : "good"),
+          value: r === null ? "-" : r.toFixed(1) + " : 1 (" + M.tempo.back.toFixed(2) + "초 / " + M.tempo.down.toFixed(2) + "초)",
+          desc: "많은 투어 선수의 비율이 약 3:1 이라는 「Tour Tempo」의 관찰이 널리 알려져 있습니다. " +
+                "30fps 영상은 한 프레임이 0.033초라 다운스윙 시간 오차가 큽니다. 구간 지정이 정확할수록 믿을 만합니다."
+        });
+      }
+      // (11-9) 임팩트 때 머리 위치 (클럽마다 기준이 다름, 정면 촬영만 판단)
+      if (!isImage) {
+        const club = clubProfile();
+        if (view !== "face") {
+          rows.push({ name: "임팩트 때 머리 위치 (" + club.name + " 기준)", status: "na", value: "측면 영상은 좌우 이동이 보이지 않음",
+                      desc: "머리가 공 뒤에 남는지, 공 위로 오는지는 정면 촬영 영상으로만 확인할 수 있습니다." });
+        } else {
+          const v = M.headX.impact;   // +는 타깃 쪽, -는 타깃 반대쪽 (어깨폭 대비 %)
+          const behindStyle = club.impactHead === "behind";
+          rows.push({
+            name: "임팩트 때 머리 위치 (" + club.name + " 기준)",
+            status: v === null ? "na" : (behindStyle ? (v > 15 ? "warn" : "good") : (v < -15 ? "warn" : "good")),
+            value: v === null ? "-" : "어드레스보다 " + (v >= 0 ? "타깃 쪽으로 " : "타깃 반대쪽으로 ") + fmt(Math.abs(v), "%") + " 이동 (어깨폭 대비)",
+            desc: behindStyle
+              ? "드라이버는 임팩트 때 머리가 공 뒤에 남아 올려 치기 좋은 자세가 일반적입니다. 머리가 타깃 쪽으로 먼저 나가면 위에서 찍혀 스카이볼·슬라이스가 나기 쉽습니다."
+              : club.name + "은(는) 임팩트 때 머리와 체중이 공 위나 살짝 타깃 쪽에 오는 것이 일반적입니다. 머리가 뒤에 남으면(체중이 뒤에 남음) 클럽의 가장 낮은 지점이 공 뒤로 가서 뒤땅·얇은 샷이 나기 쉽습니다."
+          });
+        }
+      }
+      return rows;
+    }
+
+    // ----------------------------------------------------------
+    // [12] 프로 선수 비교 데이터
+    // ----------------------------------------------------------
+    // ※ 모든 설명은 "일반적으로 알려진 특징"의 요약이며, 측정 수치가 아닙니다.
+    // traits 의 check(M) 함수는 [내 측정값 글자, 비교 설명] 을 돌려줍니다.
+    // 이 앱이 측정할 수 없는 특징(공의 탄도, 손목 각도 등)일 때 쓰는 비교 글자
+    function notMeasured(what) {
+      return function () {
+        return ["측정 안 함", "「" + what + "」 항목은 이 앱이 보지 못합니다. 영상을 느리게 재생하며 직접 비교해 보세요."];
+      };
+    }
+
+    // ※ clubNotes: 고른 클럽에 따라 덧붙이는 특징. 방송·기사에서 널리 알려진 것만 넣고,
+    //   알려진 것이 없는 클럽은 비워 둡니다. (비어 있으면 "널리 알려진 특징 없음"으로 표시)
+    const PROS = [
+      {
+        id: "tiger", name: "타이거 우즈",
+        clubNotes: {
+          wood: [{ known: "낮게 깔려 멀리 굴러가는 '스팅어' 샷(롱아이언·페어웨이 우드)으로 유명", check: notMeasured("공의 탄도") }],
+          iron: [{ known: "아이언으로 탄도와 거리를 자유롭게 조절하는 샷 메이킹 능력이 뛰어나다고 널리 평가됨 (롱아이언 '스팅어' 샷으로도 유명)", check: notMeasured("공의 탄도와 거리") }],
+          wedge: [{ known: "웨지로 높이와 스핀을 다양하게 만드는 쇼트게임 감각으로 널리 알려짐", check: notMeasured("공의 높이와 스핀") }]
+        },
+        summary: "여러 코치(부치 하먼, 행크 헤이니, 숀 폴리 등)와 함께 스윙을 여러 번 바꾼 것으로 유명해서, 어느 시기냐에 따라 특징이 다릅니다. " +
+                 "공통적으로 강한 몸통 회전과 하체가 먼저 움직이는 다운스윙이 자주 언급됩니다.",
+        traits: [
+          {
+            known: "큰 어깨 회전과 하체가 리드하는 다운스윙",
+            check: function (M) { return compareRange(M.shoulder.top, proRef().shoulderTop, "°", "어깨 회전"); }
+          },
+          {
+            known: "다운스윙에서 머리가 살짝 낮아지는 모습이 여러 분석에서 언급됨",
+            check: function (M) {
+              const v = M.headY.impact;
+              if (v === null) return ["-", "측정할 수 없습니다."];
+              return ["머리 " + (v >= 0 ? "아래로 " : "위로 ") + fmt(Math.abs(v), "%"),
+                      v > 3 ? "비슷하게 임팩트 때 머리가 조금 낮아집니다." :
+                      "머리 높이가 유지되거나 올라갑니다. 머리가 낮아지는 것이 꼭 좋은 것은 아니니 따라 할 필요는 없습니다."];
+            }
+          }
+        ]
+      },
+      {
+        id: "rory", name: "로리 매킬로이",
+        clubNotes: {
+          iron: [{ known: "롱아이언도 공을 높이 띄워 치는 높은 탄도로 자주 언급됨", check: notMeasured("공의 탄도") }]
+        },
+        summary: "큰 어깨 회전과 매우 빠른 골반 회전으로 큰 비거리를 내는 선수로 자주 소개됩니다. " +
+                 "백스윙 탑에서 리드 팔이 곧게 펴져 있고, 임팩트 때 골반이 타깃 쪽으로 많이 열려 있는 모습이 특징으로 언급됩니다.",
+        traits: [
+          {
+            known: "큰 어깨 회전과 골반의 차이(X-팩터)",
+            check: function (M) { return compareRange(M.xFactor, proRef().xFactorTop, "°", "X-팩터"); }
+          },
+          {
+            known: "탑에서 리드 팔이 곧게 펴짐",
+            check: function (M) { return compareRange(M.leadArm.top, proRef().leadArmTop, "°", "탑 리드 팔"); }
+          },
+          {
+            known: "임팩트 때 골반이 많이 열려 있음",
+            check: function (M) {
+              const v = M.hip.impact;
+              if (v === null) return ["-", "측정할 수 없습니다."];
+              return ["임팩트 골반 회전 " + fmt(v, "°"),
+                      "어드레스 대비 골반이 돌아간 크기만 보여 줍니다(방향 구분 어려움). 값이 작다면 하체 회전이 상대적으로 적은 편입니다."];
+            }
+          }
+        ]
+      },
+      {
+        id: "dj", name: "더스틴 존슨",
+        clubNotes: {
+          wood: [{ known: "리드 손목이 손등 쪽으로 꺾인 탑은 우드에서도 같은 형태로 알려짐", check: notMeasured("손목 각도") }],
+          iron: [{ known: "리드 손목이 손등 쪽으로 꺾인 탑은 아이언에서도 같은 형태로 알려짐", check: notMeasured("손목 각도") }],
+          wedge: [
+            { known: "리드 손목이 손등 쪽으로 꺾인 탑은 웨지에서도 같은 형태로 알려짐", check: notMeasured("손목 각도") },
+            { known: "웨지 거리 조절을 측정 장비로 집중 연습해 크게 좋아졌다는 이야기가 널리 알려짐", check: notMeasured("샷 거리") }
+          ]
+        },
+        summary: "백스윙 탑에서 리드 손목이 손등 쪽으로 강하게 꺾인(bowed) 형태와 클럽 페이스가 닫힌 탑으로 유명합니다. " +
+                 "이 앱은 손목과 클럽을 추적하지 않아 그 특징은 직접 비교할 수 없습니다.",
+        traits: [
+          {
+            known: "탑에서 리드 손목이 손등 쪽으로 꺾임(bowed wrist)",
+            check: function () { return ["측정 안 함", "손목 각도와 클럽 페이스는 이 앱이 보지 못합니다. 영상을 느리게 재생하며 직접 비교해 보세요."]; }
+          },
+          {
+            known: "큰 몸통 회전",
+            check: function (M) { return compareRange(M.shoulder.top, proRef().shoulderTop, "°", "어깨 회전"); }
+          }
+        ]
+      },
+      {
+        id: "rahm", name: "존 람",
+        clubNotes: {
+          wood:  [{ known: "우드에서도 짧은 백스윙을 그대로 유지하는 것으로 알려짐", check: function (M) { return compareRange(M.shoulder.top, proRef().shoulderTop, "°", "어깨 회전"); } }],
+          iron:  [{ known: "아이언에서도 짧은 백스윙을 그대로 유지하는 것으로 알려짐", check: function (M) { return compareRange(M.shoulder.top, proRef().shoulderTop, "°", "어깨 회전"); } }],
+          wedge: [{ known: "웨지에서도 짧고 간결한 백스윙을 유지하는 것으로 알려짐", check: function (M) { return compareRange(M.shoulder.top, proRef().shoulderTop, "°", "어깨 회전"); } }]
+        },
+        summary: "짧은(¾ 느낌의) 백스윙으로 유명합니다. 본인이 태어날 때부터 있던 발 문제로 발목 움직임이 제한되어 이런 스윙을 하게 됐다고 인터뷰에서 밝힌 바 있습니다. " +
+                 "백스윙이 짧아도 강한 샷이 가능하다는 좋은 예로 자주 소개됩니다.",
+        traits: [
+          {
+            known: "짧고 간결한 백스윙",
+            check: function (M) {
+              const v = M.leadArm.top, s = M.shoulder.top;
+              if (v === null) return ["-", "측정할 수 없습니다."];
+              return ["탑 리드 팔 " + fmt(v, "°") + ", 어깨 회전 " + fmt(s, "°"),
+                      v < LIMIT.overswingArm ? "팔이 많이 굽어 백스윙이 길어지는 편입니다. 짧게 끊어도 회전이 충분하면 비거리를 낼 수 있습니다."
+                                             : "팔이 펴진 채 탑에 도달합니다. 백스윙 길이보다 회전과 타이밍이 중요하다는 점에서 참고할 만합니다."];
+            }
+          },
+          {
+            known: "빠르고 단단한 전환",
+            check: function (M) { return tempoCompare(M); }
+          }
+        ]
+      },
+      {
+        id: "ko", name: "고진영",
+        clubNotes: {
+          iron: [{ known: "정확한 아이언 샷으로 그린 적중률이 높은 선수로 자주 소개됨", check: notMeasured("공이 그린에 떨어지는 정확도") }]
+        },
+        summary: "간결하고 반복성이 좋은 스윙, 일정한 템포로 자주 평가됩니다. 큰 동작보다 정확성과 일관성이 강점으로 언급됩니다.",
+        traits: [
+          {
+            known: "머리와 몸의 중심이 안정적임",
+            check: function (M) {
+              const x = viewSelect.value === "face" ? M.headX.top : null, y = M.headY.impact;
+              return ["머리 좌우 " + fmt(x, "%") + ", 상하 " + fmt(y, "%"),
+                      (x !== null && Math.abs(x) > LIMIT.sway) || (y !== null && Math.abs(y) > LIMIT.headVertical)
+                        ? "머리 움직임이 큰 편입니다. 중심을 유지하는 연습이 도움이 될 수 있습니다."
+                        : "머리 움직임이 작은 편으로, 안정적인 스윙이라는 점에서 비슷한 방향입니다." +
+                          (x === null ? " (좌우 이동은 정면 영상에서만 측정)" : "")];
+            }
+          },
+          {
+            known: "일정한 템포",
+            check: function (M) { return tempoCompare(M); }
+          }
+        ]
+      },
+      {
+        id: "park", name: "박인비",
+        clubNotes: {
+          wedge: [{ known: "퍼팅과 쇼트게임이 뛰어난 선수로 가장 널리 알려짐 (이 앱은 퍼팅은 분석하지 않음)", check: notMeasured("쇼트게임 결과") }]
+        },
+        summary: "느리고 부드러운 템포, 탑에서 잠시 멈추는 듯한 독특한 리듬, 하체 움직임이 적은 스윙으로 잘 알려져 있습니다. " +
+                 "교과서와 다른 스윙도 반복성이 높으면 좋은 결과를 낼 수 있다는 예로 자주 언급됩니다.",
+        traits: [
+          {
+            known: "느리고 여유 있는 백스윙",
+            check: function (M) {
+              if (M.tempo.ratio === null) return ["-", "측정할 수 없습니다."];
+              return ["백스윙 " + M.tempo.back.toFixed(2) + "초",
+                      "선수의 실제 시간은 알 수 없으므로 수치 비교는 하지 않습니다. 내 백스윙이 급하게 느껴진다면 천천히 올리는 연습을 참고해 보세요."];
+            }
+          },
+          {
+            known: "하체(골반) 움직임이 적은 편",
+            check: function (M) {
+              const v = M.hip.top;
+              if (v === null) return ["-", "측정할 수 없습니다."];
+              return ["탑 골반 회전 " + fmt(v, "°"),
+                      v > proRef().hipTop.max ? "골반이 많이 도는 편입니다. 하체를 조용히 쓰는 스타일과는 다른 방향입니다."
+                                         : "골반 회전이 크지 않은 편으로, 하체를 조용히 쓰는 스타일과 비슷한 방향입니다."];
+            }
+          }
+        ]
+      }
+    ];
+
+    // 내 값을 참고 범위와 비교해 [측정값 글자, 설명] 을 만듭니다.
+    function compareRange(value, ref, unit, label) {
+      if (value === null || value === undefined) return ["-", "측정할 수 없습니다. (사진이거나 관절을 못 찾음)"];
+      const text = label + " " + fmt(value, unit);
+      const range = "(" + clubProfile().name + " 참고 범위 약 " + ref.min + "~" + ref.max + unit + ")";
+      if (value < ref.min) return [text, "참고 범위보다 작습니다 " + range + ". 이 선수의 특징과는 차이가 있는 방향입니다."];
+      if (value > ref.max) return [text, "참고 범위보다 큽니다 " + range + ". 비슷하거나 더 큰 방향입니다."];
+      return [text, "참고 범위 안입니다 " + range + ". 비슷한 방향입니다."];
+    }
+
+    // 템포 비교 공통 함수
+    function tempoCompare(M) {
+      const r = M.tempo.ratio;
+      if (r === null) return ["-", "영상에서 구간을 찾아야 측정할 수 있습니다."];
+      return ["템포 " + r.toFixed(1) + " : 1",
+              inRange(r, REF.tempo, 0) ? "널리 알려진 약 3:1 근처입니다." :
+              (r < REF.tempo.min ? "백스윙에 비해 다운스윙이 상대적으로 깁니다(백스윙이 급할 수 있음)." :
+                                   "백스윙이 다운스윙보다 많이 깁니다(느린 백스윙).")];
+    }
+
+    // ----------------------------------------------------------
+    // [13] 표 그리기
+    // ----------------------------------------------------------
+
+    // 숫자를 보기 좋게: null 이면 "-", 아니면 반올림 + 단위
+    function fmt(v, unit) {
+      if (v === null || v === undefined || isNaN(v)) return "-";
+      return Math.round(v) + (unit || "");
+    }
+    function avg(a, b) { return (a === null || b === null) ? null : (a + b) / 2; }
+    // 값이 범위 안인지 (margin 만큼 여유를 줌)
+    function inRange(v, ref, margin) {
+      return v !== null && v >= ref.min - margin && v <= ref.max + margin;
+    }
+
+    // 모든 표를 다시 그립니다. (분석이 끝났거나 설정이 바뀔 때마다 호출)
+    function renderAll() {
+      renderPhaseTable();
+      const M = computeMetrics();
+      renderMetricTable(M);
+      renderDiagTable(M);
+      renderProTable(M);
+      renderBallFlight(M);   // 공이 잘못 맞는 이유 (구질 원인)
+      renderTouch();         // 공·클럽헤드 터치 결과
+      autoPhaseBtn.disabled = isImage || frames.length === 0;
+      updateAnalyzeButton();
+    }
+
+    // (13-1) 구간 표
+    function renderPhaseTable() {
+      phaseTableBody.innerHTML = "";
+      const current = currentFrameIndex();
+      PHASES.forEach(function (ph) {
+        const idx = phases[ph.key];
+        const tr = document.createElement("tr");
+        if (idx >= 0 && idx === current) tr.className = "current";
+        tr.innerHTML =
+          "<td>" + ph.name + "</td>" +
+          "<td>" + (idx >= 0 ? frames[idx].t.toFixed(2) : "-") + "</td>" +
+          '<td><button class="light small" data-act="go">▶ 이동</button></td>' +
+          '<td><button class="small" data-act="set">현재 프레임으로 지정</button></td>';
+
+        const goBtn = tr.querySelector('[data-act="go"]');
+        const setBtn = tr.querySelector('[data-act="set"]');
+        goBtn.disabled = idx < 0 || isImage;
+        setBtn.disabled = frames.length === 0 || isImage;
+
+        // 이동: 그 구간 장면으로 영상을 옮김
+        goBtn.addEventListener("click", function () {
+          video.pause();
+          video.currentTime = frames[idx].t;
+        });
+        // 직접 지정: 지금 보고 있는 프레임을 이 구간으로 정함
+        setBtn.addEventListener("click", function () {
+          const i = currentFrameIndex();
+          if (i < 0) { showToast("분석한 범위 안으로 영상을 옮긴 뒤 눌러 주세요."); return; }
+          phases[ph.key] = i;
+          renderAll();
+        });
+        phaseTableBody.appendChild(tr);
+      });
+
+      // 구간 순서가 이상하면 경고 (어드레스 → 탑 → 임팩트 → 피니시 순서여야 함)
+      const p = phases;
+      const ordered = p.address <= p.top && p.top <= p.impact && p.impact <= p.finish;
+      phaseWarning.textContent = (!isImage && frames.length && !ordered)
+        ? "⚠️ 구간 순서가 어드레스 → 탑 → 임팩트 → 피니시 순서가 아닙니다. 직접 지정해 주세요." : "";
+    }
+
+    // (13-2) 각도 측정 표
+    // 정확도: 촬영 방향마다 "높음 / 보통 / 낮음 / 불가"
+    function renderMetricTable(M) {
+      metricTableBody.innerHTML = "";
+      if (!M) {
+        metricTableBody.innerHTML = '<tr><td colspan="7" class="hint">영상을 올리고 「자세 분석 시작」을 누르면 표시됩니다.</td></tr>';
+        return;
+      }
+      const view = viewSelect.value;
+      const sp = view === "dtl" ? clubProfile().spineDtl : clubProfile().spineFace;
+      const spineRef = view === "dtl" ? clubProfile().name + " 어드레스 약 " + sp.min + "~" + sp.max + "° (앞숙임), 임팩트까지 비슷하게 유지"
+                                      : clubProfile().name + " 어드레스 약 " + sp.min + "~" + sp.max + "° (타깃 반대쪽으로 기울어짐)";
+
+      // 표의 한 줄 = { 항목 이름, 단위, 각 구간 값, 참고 범위, 정확도(정면/측면), 움직임 필요 여부 }
+      const rows = [
+        { name: "척추 기울기 " + (view === "dtl" ? "(앞숙임)" : "(옆기울기)"), unit: "°", values: M.spine,
+          ref: spineRef, acc: { face: "보통", dtl: "높음" } },
+        { name: "리드 팔 각도 (180° = 폄)", unit: "°", values: M.leadArm,
+          ref: "탑에서 약 " + proRef().leadArmTop.min + "~" + proRef().leadArmTop.max + "° (" + clubProfile().name + " 기준)", acc: { face: "높음", dtl: "낮음" } },
+        { name: "무릎 굽힘 (리드 / 트레일)", unit: "°", values: null, pair: [M.kneeLead, M.kneeTrail],
+          ref: "어드레스 약 15~30°", acc: { face: "보통", dtl: "높음" } },
+        { name: "어깨 회전 (어드레스 대비)", unit: "°", values: M.shoulder, skip: ["address"], motion: true,
+          ref: "탑에서 약 " + proRef().shoulderTop.min + "~" + proRef().shoulderTop.max + "° (" + clubProfile().name + " 풀스윙·프로 기준, 아마추어는 더 작아도 정상)",
+          acc: { face: "낮음 (90°까지만)", dtl: "낮음 (3D 추정)" } },
+        { name: "골반 회전 (어드레스 대비)", unit: "°", values: M.hip, skip: ["address"], motion: true,
+          ref: "탑에서 약 " + proRef().hipTop.min + "~" + proRef().hipTop.max + "° (" + clubProfile().name + " 기준)", acc: { face: "낮음 (90°까지만)", dtl: "낮음 (3D 추정)" } },
+        { name: "X-팩터 근사값 (어깨 − 골반)", unit: "°", values: { top: M.xFactor }, skip: ["address", "impact", "finish"], motion: true,
+          ref: "탑에서 약 " + proRef().xFactorTop.min + "~" + proRef().xFactorTop.max + "° (" + clubProfile().name + " 기준)", acc: { face: "낮음", dtl: "낮음" } },
+        { name: "머리 좌우 이동 (어깨폭 대비, +타깃 쪽)", unit: "%", values: M.headX, skip: ["address"], motion: true,
+          ref: "탑에서 약 ±25% 이내 (이 앱 기준)", acc: { face: "높음", dtl: "불가" } },
+        { name: "머리 상하 이동 (몸통 대비, +아래)", unit: "%", values: M.headY, skip: ["address"], motion: true,
+          ref: "임팩트에서 약 ±10% 이내 (이 앱 기준)", acc: { face: "높음", dtl: "높음" } },
+        { name: "골반 공 쪽 이동 (몸통 대비)", unit: "%", values: M.hipBall, skip: ["address"], motion: true,
+          ref: "임팩트에서 약 8% 이하 (이 앱 기준)", acc: { face: "불가", dtl: "높음" } }
+      ];
+
+      rows.forEach(function (row) {
+        const accText = row.acc[view];
+        const impossible = accText === "불가";
+        let cells = "";
+        PHASES.forEach(function (ph) {
+          let cell;
+          if (row.skip && row.skip.indexOf(ph.key) >= 0) {
+            cell = '<span class="muted">—</span>';                         // 이 구간은 해당 없음
+          } else if (impossible) {
+            cell = '<span class="muted">' + (view === "dtl" ? "정면 촬영 필요" : "측면 촬영 필요") + "</span>";
+          } else if (row.motion && isImage) {
+            cell = '<span class="muted">영상 필요</span>';
+          } else if (row.pair) {
+            cell = fmt(row.pair[0][ph.key], row.unit) + " / " + fmt(row.pair[1][ph.key], row.unit);
+          } else {
+            cell = fmt(row.values[ph.key], row.unit);
+          }
+          if (isImage && ph.key !== "address") cell = '<span class="muted">—</span>'; // 사진은 한 장면뿐
+          cells += "<td>" + cell + "</td>";
+        });
+        const tr = document.createElement("tr");
+        tr.innerHTML =
+          '<td class="left">' + row.name + "</td>" + cells +
+          '<td class="left">' + row.ref + "</td>" +
+          "<td>" + accHtml(accText) + "</td>";
+        metricTableBody.appendChild(tr);
+      });
+
+      // 템포 줄 (구간이 아니라 시간 비율이라 따로)
+      const r = M.tempo.ratio;
+      const tr = document.createElement("tr");
+      tr.innerHTML =
+        '<td class="left">템포 (백스윙 : 다운스윙)</td>' +
+        '<td colspan="4">' + (isImage || r === null ? '<span class="muted">영상 필요</span>'
+          : r.toFixed(1) + " : 1 &nbsp;(" + M.tempo.back.toFixed(2) + "초 / " + M.tempo.down.toFixed(2) + "초)") + "</td>" +
+        '<td class="left">약 3 : 1 (Tour Tempo)</td>' +
+        "<td>" + accHtml("보통") + "</td>";
+      metricTableBody.appendChild(tr);
+    }
+
+    // 정확도 글자에 색을 입힘
+    function accHtml(text) {
+      const cls = text.startsWith("높음") ? "acc-high" : text.startsWith("보통") ? "acc-mid" : "acc-low";
+      return '<span class="' + cls + '">' + text + "</span>";
+    }
+
+    // (13-3) 진단 표
+    function renderDiagTable(M) {
+      diagTableBody.innerHTML = "";
+      if (!M) {
+        diagTableBody.innerHTML = '<tr><td colspan="4" class="hint">분석 후 표시됩니다.</td></tr>';
+        return;
+      }
+      const label = { good: "양호", warn: "주의", na: "판단 불가" };
+      diagnose(M).forEach(function (row) {
+        const tr = document.createElement("tr");
+        tr.innerHTML =
+          "<td>" + row.name + "</td>" +
+          '<td><span class="badge ' + row.status + '">' + label[row.status] + "</span></td>" +
+          '<td class="left">' + row.value + "</td>" +
+          '<td class="left">' + row.desc + "</td>";
+        diagTableBody.appendChild(tr);
+      });
+    }
+
+    // (13-4) 프로 비교 표
+    function renderProTable(M) {
+      const pro = PROS.find(function (p) { return p.id === proSelect.value; }) || PROS[0];
+      const club = clubProfile();
+      proSummary.innerHTML = "<b>" + pro.name + "</b> — " + pro.summary +
+        '<br><span class="muted">비교 기준: ' + club.name + " (참고 범위는 클럽별 대략값)</span>";
+      proTableBody.innerHTML = "";
+
+      // ① 몸 동작 특징 (모든 클럽 공통) + ② 고른 클럽에서 널리 알려진 특징
+      const notes = (pro.clubNotes && pro.clubNotes[currentClub]) || [];
+      const rows = pro.traits.concat(notes.map(function (n) {
+        return { known: "[" + club.name + "] " + n.known, check: n.check };
+      }));
+      rows.forEach(function (trait) {
+        const result = M ? trait.check(M) : ["-", "분석 후 표시됩니다."];
+        const tr = document.createElement("tr");
+        tr.innerHTML =
+          '<td class="left">' + trait.known + "</td>" +
+          "<td>" + result[0] + "</td>" +
+          '<td class="left">' + result[1] + "</td>";
+        proTableBody.appendChild(tr);
+      });
+
+      // 드라이버가 아닌데 그 클럽에 대해 알려진 특징이 없으면 솔직하게 표시
+      if (currentClub !== "driver" && notes.length === 0) {
+        const tr = document.createElement("tr");
+        tr.innerHTML =
+          '<td class="left muted">[' + club.name + "] 이 선수의 " + club.name + " 스윙에 대해 널리 알려진 특징이 없습니다</td>" +
+          "<td>-</td>" +
+          '<td class="left">위의 몸 동작 비교만 참고하세요. 확인되지 않은 내용은 지어내 넣지 않았습니다.</td>';
+        proTableBody.appendChild(tr);
+      }
+    }
+
+    // ----------------------------------------------------------
+    // [14] 영상 위에 뼈대 그리기 (계속 반복)
+    // ----------------------------------------------------------
+
+    // 지금 영상 시간에 해당하는 분석 프레임 번호 (분석 범위 밖이면 -1)
+    function currentFrameIndex() {
+      if (!frames.length) return -1;
+      if (isImage) return 0;
+      const i = Math.round((video.currentTime - frames[0].t) * fps);
+      if (i < -1 || i > frames.length) return -1;   // 범위를 벗어남
+      return Math.max(0, Math.min(frames.length - 1, i));
+    }
+
+    let lastPhaseRowFrame = -2; // 구간 표 강조를 다시 그릴지 판단용
+
+    function drawOverlay() {
+      ctx.clearRect(0, 0, overlay.width, overlay.height); // 이전 그림 지우기
+      const i = currentFrameIndex();
+
+      // 프레임 정보 글자 갱신
+      if (!isImage && mediaReady) {
+        frameInfo.textContent = "현재 " + video.currentTime.toFixed(2) + "초" +
+          (i >= 0 ? " · 분석 프레임 #" + (i + 1) + "/" + frames.length : "");
+      }
+      // 현재 프레임이 바뀌면 구간 표의 강조 줄도 다시 그림
+      if (i !== lastPhaseRowFrame) { lastPhaseRowFrame = i; renderPhaseTable(); }
+
+      if (i < 0 || !skeletonCheck.checked) return;
+      const f = frames[i];
+      const scale = Math.max(mediaW, mediaH) / 600;   // 영상 크기에 맞춰 선 굵기 조절
+      if (!f.lm) {
+        drawLabel(["이 프레임에서 사람을 찾지 못함"], scale);
+        return;
+      }
+      const lead = sides().lead;
+      const leadArmBones = [[lead.sh, lead.el], [lead.el, lead.wr]];
+
+      // (14-1) 뼈(선) 그리기: 리드 팔은 주황색, 나머지는 연두색
+      ctx.lineCap = "round";
+      BONES.forEach(function (b) {
+        const p1 = pt(i, b[0]), p2 = pt(i, b[1]);
+        const isLead = leadArmBones.some(function (l) { return l[0] === b[0] && l[1] === b[1]; });
+        ctx.strokeStyle = isLead ? "#ff8a00" : "#7CFC9A";
+        ctx.lineWidth = (isLead ? 5 : 3.5) * scale;
+        ctx.beginPath();
+        ctx.moveTo(p1.x, p1.y);
+        ctx.lineTo(p2.x, p2.y);
+        ctx.stroke();
+      });
+
+      // (14-2) 척추선 (골반 가운데 ~ 어깨 가운데) 노란 점선
+      const s = mid(pt(i, LM.L_SH), pt(i, LM.R_SH)), h = mid(pt(i, LM.L_HIP), pt(i, LM.R_HIP));
+      ctx.setLineDash([8 * scale, 6 * scale]);
+      ctx.strokeStyle = "#ffe14d";
+      ctx.lineWidth = 3 * scale;
+      ctx.beginPath(); ctx.moveTo(h.x, h.y); ctx.lineTo(s.x, s.y); ctx.stroke();
+      ctx.setLineDash([]);
+
+      // (14-3) 관절(점) 그리기
+      const joints = [0, 11, 12, 13, 14, 15, 16, 23, 24, 25, 26, 27, 28];
+      joints.forEach(function (j) {
+        const p = pt(i, j);
+        ctx.fillStyle = j === LM.NOSE ? "#ff4d6d" : "#ffffff";
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, 4.5 * scale, 0, Math.PI * 2);
+        ctx.fill();
+      });
+
+      // (14-4) 왼쪽 위 정보 상자: 구간 이름 + 지금 프레임의 각도
+      const phaseNames = PHASES.filter(function (ph) { return phases[ph.key] === i; })
+                               .map(function (ph) { return ph.name; });
+      const lines = [];
+      if (phaseNames.length && !isImage) lines.push("★ " + phaseNames.join(" / "));
+      lines.push("척추 기울기 " + fmt(spineTilt(i), "°"));
+      lines.push("리드 팔 " + fmt(leadArm(i), "°"));
+      lines.push("무릎 굽힘 " + fmt(kneeFlex(i, lead), "°") + " / " + fmt(kneeFlex(i, sides().trail), "°"));
+      drawLabel(lines, scale);
+    }
+
+    // 반투명 검은 상자에 글자 여러 줄 쓰기
+    function drawLabel(lines, scale) {
+      const size = 15 * scale;
+      ctx.font = "bold " + size + "px 'Malgun Gothic', sans-serif";
+      const width = Math.max.apply(null, lines.map(function (t) { return ctx.measureText(t).width; })) + 16 * scale;
+      ctx.fillStyle = "rgba(0, 0, 0, 0.55)";
+      ctx.fillRect(8 * scale, 8 * scale, width, lines.length * size * 1.4 + 10 * scale);
+      ctx.fillStyle = "#fff";
+      lines.forEach(function (t, k) {
+        ctx.fillText(t, 16 * scale, 8 * scale + size * 1.2 + k * size * 1.4);
+      });
+    }
+
+    // 화면이 다시 그려질 때마다(1초에 약 60번) drawOverlay 를 실행
+    function drawLoop() {
+      if (mediaReady) {
+        drawOverlay();
+        drawTouchMarks();   // 공·클럽헤드 터치 표시 (뼈대 위에 덧그림)
+      }
+      requestAnimationFrame(drawLoop);
+    }
+
+    // ----------------------------------------------------------
+    // [15] 촬영 방향별 정확도 안내문
+    // ----------------------------------------------------------
+    function renderViewNotice() {
+      if (viewSelect.value === "face") {
+        viewNotice.innerHTML =
+          "<b>📷 정면 촬영</b> — 카메라를 가슴 정면, 허리~가슴 높이에 두고 몸 전체가 나오게 찍은 영상<ul>" +
+          "<li><b>잘 보이는 것:</b> 머리 좌우 이동(스웨이), 리드 팔 굽힘(치킨윙), 척추 옆기울기, 체중 이동</li>" +
+          "<li><b>어려운 것:</b> 척추 앞숙임과 얼리 익스텐션(앞뒤 움직임이 화면에 안 보임)</li>" +
+          "<li><b>회전 각도:</b> 어깨·골반 선이 짧아 보이는 정도로 추정하므로 90°를 넘는 회전은 구분할 수 없고, 팔에 가려지면 오차가 큽니다.</li></ul>";
+      } else {
+        viewNotice.innerHTML =
+          "<b>📷 측면 촬영 (Down-the-line)</b> — 카메라를 내 손 높이, 발끝과 타깃을 잇는 선의 뒤쪽에 두고 찍은 영상<ul>" +
+          "<li><b>잘 보이는 것:</b> 척추 앞숙임 유지, 얼리 익스텐션(골반이 공 쪽으로 나옴), 무릎 굽힘, 머리 상하 이동</li>" +
+          "<li><b>어려운 것:</b> 머리 좌우(타깃 방향) 이동, 리드 팔 각도(팔이 몸과 겹쳐 보임)</li>" +
+          "<li><b>회전 각도:</b> AI가 추정한 3D 좌표를 쓰므로 오차가 큽니다. 참고용으로만 보세요.</li></ul>";
+      }
+    }
+
+    // ----------------------------------------------------------
+    // [16] 이벤트 연결 (버튼 클릭, 선택 변경 등에 반응)
+    // ----------------------------------------------------------
+
+    // 파일을 고르면 열기
+    fileInput.addEventListener("change", function () {
+      openFile(fileInput.files[0]);
+    });
+
+    // 휴대폰: 영상 영역의 안내 글을 눌러도 파일 고르는 창이 열림
+    placeholder.addEventListener("click", function () { fileInput.click(); });
+
+    // 영상 영역에 파일을 끌어다 놓아도 열기 (드래그 앤 드롭)
+    mediaWrap.addEventListener("dragover", function (e) {
+      e.preventDefault();               // 브라우저가 파일을 새 탭으로 여는 것을 막음
+      mediaWrap.classList.add("dragover");
+    });
+    mediaWrap.addEventListener("dragleave", function () { mediaWrap.classList.remove("dragover"); });
+    mediaWrap.addEventListener("drop", function (e) {
+      e.preventDefault();
+      mediaWrap.classList.remove("dragover");
+      openFile(e.dataTransfer.files[0]);
+    });
+
+    analyzeBtn.addEventListener("click", analyze);
+
+    // 촬영 방향/치는 손이 바뀌면 계산을 다시 (관절 위치는 그대로, 해석만 바뀜)
+    viewSelect.addEventListener("change", function () { renderViewNotice(); renderAll(); });
+    handSelect.addEventListener("change", renderAll);
+    proSelect.addEventListener("change", function () { renderProTable(computeMetrics()); });
+
+    // 구간 자동 찾기 다시
+    autoPhaseBtn.addEventListener("click", function () {
+      autoDetectPhases();
+      renderAll();
+    });
+
+    // 프레임 한 칸씩 이동 (분석 간격 기준)
+    prevFrameBtn.addEventListener("click", function () {
+      video.pause();
+      video.currentTime = Math.max(0, video.currentTime - 1 / fps);
+    });
+    nextFrameBtn.addEventListener("click", function () {
+      video.pause();
+      video.currentTime = Math.min(video.duration || 0, video.currentTime + 1 / fps);
+    });
+
+    // 재생 속도 바꾸기 (슬로모션으로 보기)
+    rateSelect.addEventListener("change", function () {
+      video.playbackRate = Number(rateSelect.value);
+    });
+
+    // ----------------------------------------------------------
+    // [17] 내 스윙 기록 (저장 / 불러오기 / 삭제)
+    // ----------------------------------------------------------
+    // 영상은 용량이 커서 저장하지 않고, 숫자 결과와 작은 사진만 저장합니다.
+    // 저장 위치는 두 가지입니다.
+    //  ① 내 계정 전용 저장소(db): claude.ai 에 로그인해 이 페이지를 열면 사용.
+    //     휴대폰과 컴퓨터에서 같은 기록이 보이고, 다른 사람은 볼 수 없습니다.
+    //  ② 이 기기 브라우저 저장소(localStorage): ①을 쓸 수 없을 때 대신 사용.
+
+    // 지금 쓰는 저장 방식. cloudCol 이 있으면 ①, 없으면 ②
+    let cloudCol = null;
+
+    // 기록마다 붙이는 고유 번호 (지울 때 어떤 기록인지 구분용)
+    function newId() {
+      return Date.now().toString(36) + "-" + Math.random().toString(36).slice(2, 8);
+    }
+
+    // (17-1) 이 기기에 저장된 기록 불러오기. 없거나 읽을 수 없으면 빈 목록
+    function loadHistory() {
+      try {
+        const saved = localStorage.getItem(HISTORY_KEY);
+        if (saved) {
+          // 예전 기록에 고유 번호가 없으면 붙여 줌
+          return JSON.parse(saved).map(function (h) { if (!h.id) h.id = newId(); return h; });
+        }
+      } catch (e) {
+        // 저장소를 쓸 수 없는 환경이면 그냥 빈 목록으로 시작
+      }
+      return [];
+    }
+
+    // (17-2) 기록 목록을 이 기기 저장소에 저장
+    //   결과: "ok"(성공) / "full"(저장 공간 부족) / "blocked"(이 브라우저에서 저장소 사용 불가)
+    function saveHistory() {
+      try {
+        localStorage.setItem(HISTORY_KEY, JSON.stringify(history)); // 배열 → 글자(JSON)
+        return "ok";
+      } catch (e) {
+        // 저장 공간(보통 약 5MB)이 꽉 차면 QuotaExceededError 가 납니다.
+        return e && e.name === "QuotaExceededError" ? "full" : "blocked";
+      }
+    }
+
+    // (17-2-1) 내 계정 전용 저장소(db) 연결하기
+    //   claude.use("db") 는 쓸 수 없으면 null 을 돌려줍니다. 그때는 ②를 계속 씁니다.
+    async function connectCloudHistory() {
+      if (!window.claude || !window.claude.use) return;
+      try {
+        const db = await window.claude.use("db");
+        const user = await window.claude.use("user");
+        const uid = user ? await user.id() : null;
+        if (!db || !uid) return;
+
+        // "data/users/내번호" 아래는 나만 읽고 쓸 수 있는 칸입니다.
+        cloudCol = db.collection("data/users/" + uid);
+
+        // 이 기기에만 있던 기록이 있으면 한 번 옮겨 담고 이 기기에서는 지움
+        const localOnly = history.slice();
+        for (const entry of localOnly) {
+          await cloudCol.doc(entry.id).set(entry);
+        }
+        if (localOnly.length) {
+          try { localStorage.removeItem(HISTORY_KEY); } catch (e) { /* 무시 */ }
+        }
+
+        // 기록이 바뀔 때마다(다른 기기에서 추가해도) 표를 다시 그림. 한 번만 구독합니다.
+        cloudCol.orderBy("date", "desc").limit(500).onSnapshot(function (snap) {
+          history = snap.docs.map(function (d) {
+            const h = Object.assign({}, d.data());
+            h.id = d.id;
+            return h;
+          });
+          renderHistory();
+        }, function () {
+          // 연결이 끊기면 지금까지 받은 목록은 그대로 두고 안내만
+          showToast("기록 저장소 연결이 끊겼습니다. 페이지를 새로고침해 주세요.");
+        });
+        historyNote.textContent = "기록은 내 계정에 저장되어 휴대폰과 컴퓨터에서 같이 보입니다. (나만 볼 수 있음)";
+      } catch (e) {
+        cloudCol = null;   // 실패하면 이 기기 저장소를 계속 사용
+      }
+    }
+
+    // (17-2-2) 화면 아래에 잠깐 알림 띄우기 (이 페이지에서는 alert 창이 뜨지 않기 때문)
+    let toastTimer = null;
+    function showToast(text) {
+      let box = document.getElementById("toast");
+      if (!box) {
+        box = document.createElement("div");
+        box.id = "toast";
+        box.className = "toast";
+        box.setAttribute("role", "status");
+        document.body.appendChild(box);
+      }
+      box.textContent = text;
+      box.hidden = false;
+      clearTimeout(toastTimer);
+      toastTimer = setTimeout(function () { box.hidden = true; }, 3500);
+    }
+
+    // (17-2-3) 지우기 같은 되돌릴 수 없는 버튼은 "두 번 눌러야" 실행
+    //   첫 번째 누름: 버튼 글자가 "한 번 더 누르면 삭제" 로 바뀜 (3초 안에 다시 누르면 실행)
+    function confirmTap(button, askText, action) {
+      if (button.dataset.armed === "yes") {
+        button.dataset.armed = "";
+        button.classList.remove("confirming");
+        button.textContent = button.dataset.label;
+        action();
+        return;
+      }
+      button.dataset.armed = "yes";
+      button.dataset.label = button.textContent;
+      button.textContent = askText;
+      button.classList.add("confirming");
+      setTimeout(function () {
+        if (button.dataset.armed !== "yes") return;
+        button.dataset.armed = "";
+        button.classList.remove("confirming");
+        button.textContent = button.dataset.label;
+      }, 3000);
+    }
+
+    // (17-3) 백스윙 탑 장면을 가로 160픽셀짜리 작은 사진(JPEG 글자)으로 만들기
+    //   영상 장면 + 그 위의 뼈대 그림을 작은 캔버스에 같이 그립니다.
+    async function makeThumbnail() {
+      const thumb = document.createElement("canvas");
+      thumb.width = 160;
+      thumb.height = Math.round(160 * mediaH / mediaW);
+      const tctx = thumb.getContext("2d");
+
+      if (!isImage) {
+        video.pause();
+        await seekTo(frames[phases.top].t);   // 탑 장면으로 이동
+      }
+      // 뼈대 그림이 새 장면으로 다시 그려질 때까지 화면 2번 갱신을 기다림
+      await new Promise(function (r) { requestAnimationFrame(function () { requestAnimationFrame(r); }); });
+
+      tctx.drawImage(isImage ? photo : video, 0, 0, thumb.width, thumb.height);
+      tctx.drawImage(overlay, 0, 0, thumb.width, thumb.height);
+      return thumb.toDataURL("image/jpeg", 0.7); // 품질 70% (용량 줄이기)
+    }
+
+    // (17-4) 「기록하기」 버튼: 지금 분석 결과를 기록 목록 맨 앞에 추가
+    async function recordSwing() {
+      const M = computeMetrics();
+      if (!M) return;
+      recordBtn.disabled = true;
+
+      // 숫자는 소수점 없이 반올림해서 저장 (용량도 줄고 보기도 편함)
+      const round = function (v) { return (v === null || v === undefined || isNaN(v)) ? null : Math.round(v); };
+      const entry = {
+        id: newId(),
+        date: new Date().toISOString(),
+        memo: memoInput.value.trim(),
+        fileName: currentFileName,
+        club: currentClub,
+        view: viewSelect.value,
+        isImage: isImage,
+        values: {
+          spineAddr:  round(M.spine.address),
+          leadArmTop: round(M.leadArm.top),
+          shoulderTop: round(M.shoulder.top),
+          xFactor:    round(M.xFactor),
+          tempo:      M.tempo.ratio === null ? null : Math.round(M.tempo.ratio * 10) / 10
+        },
+        // 진단에서 "주의"가 나온 항목 이름만 모음
+        warnings: diagnose(M).filter(function (r) { return r.status === "warn"; })
+                             .map(function (r) { return r.name; }),
+        thumb: ""
+      };
+      try {
+        entry.thumb = await makeThumbnail();
+      } catch (e) {
+        // 사진을 못 만들어도 숫자 기록은 저장
+      }
+
+      // ① 내 계정 저장소: 문서 하나로 저장 → 표는 onSnapshot 이 알아서 다시 그림
+      if (cloudCol) {
+        try {
+          await cloudCol.doc(entry.id).set(entry);
+          memoInput.value = "";
+          recordMsg.textContent = "✅ 내 계정에 기록했습니다. (" + formatDate(entry.date) + ")";
+        } catch (e) {
+          showToast(e && e.code === "quota_exceeded"
+            ? "저장 공간이 꽉 찼습니다. 오래된 기록을 지운 뒤 다시 시도하세요."
+            : "기록하지 못했습니다. 잠시 뒤 다시 눌러 주세요.");
+        }
+        updateAnalyzeButton();
+        return;
+      }
+
+      // ② 이 기기 저장소
+      history.unshift(entry);           // unshift: 배열 맨 앞에 넣기 (새 기록이 위로)
+      let result = saveHistory();
+      if (result === "full") {
+        // 공간이 부족하면 사진을 빼고 다시 저장해 봄
+        entry.thumb = "";
+        result = saveHistory();
+        if (result === "full") {
+          history.shift();              // 그래도 안 되면 추가를 취소
+          showToast("저장 공간이 부족합니다. 오래된 기록을 지운 뒤 다시 시도하세요.");
+          updateAnalyzeButton();
+          return;
+        }
+      }
+      memoInput.value = "";
+      recordMsg.textContent = result === "ok"
+        ? "✅ 기록했습니다. (" + formatDate(entry.date) + ")"
+        : "⚠️ 이 브라우저는 저장소를 쓸 수 없어 새로고침하면 기록이 사라집니다. (개인정보 보호 모드인지 확인하세요)";
+      renderHistory();
+      updateAnalyzeButton();
+    }
+
+    // (17-5) 기록 표 그리기
+    function renderHistory() {
+      historyTableBody.innerHTML = "";
+      if (history.length === 0) {
+        historyTableBody.innerHTML =
+          '<tr><td colspan="11" class="hint">아직 기록이 없습니다. 분석 후 「기록하기」를 눌러 보세요.</td></tr>';
+        return;
+      }
+      const viewName = { face: "정면", dtl: "측면" };
+
+      history.forEach(function (entry, index) {
+        // 같은 촬영 방향의 바로 이전(더 오래된) 기록 찾기 → 변화량 계산용
+        // (클럽 정보가 없는 예전 기록은 드라이버로 봄)
+        const clubOf = function (h) { return CLUB_PROFILES[h.club] ? h.club : "driver"; };
+        const prev = history.slice(index + 1).find(function (h) { return h.view === entry.view && clubOf(h) === clubOf(entry); });
+        const v = entry.values;
+
+        const tr = document.createElement("tr");
+        tr.innerHTML =
+          "<td>" + formatDate(entry.date) + "</td>" +
+          "<td>" + (entry.thumb ? '<img class="thumb" alt="탑 장면">' : '<span class="muted">없음</span>') + "</td>" +
+          '<td class="left memo"></td>' +
+          "<td>" + CLUB_PROFILES[clubOf(entry)].name + " · " + viewName[entry.view] + (entry.isImage ? " (사진)" : "") + "</td>" +
+          "<td>" + cellWithDelta(v.spineAddr, prev && prev.values.spineAddr, "°") + "</td>" +
+          "<td>" + cellWithDelta(v.leadArmTop, prev && prev.values.leadArmTop, "°") + "</td>" +
+          "<td>" + cellWithDelta(v.shoulderTop, prev && prev.values.shoulderTop, "°") + "</td>" +
+          "<td>" + cellWithDelta(v.xFactor, prev && prev.values.xFactor, "°") + "</td>" +
+          "<td>" + (v.tempo === null ? "-" : v.tempo.toFixed(1) + " : 1") + "</td>" +
+          '<td class="left">' + (entry.warnings.length
+              ? entry.warnings.map(function (w) { return '<span class="badge warn">' + w + "</span>"; }).join(" ")
+              : '<span class="badge good">없음</span>') + "</td>" +
+          '<td><button class="small danger">삭제</button></td>';
+
+        // 사진 주소와 메모는 innerHTML 대신 따로 넣습니다.
+        // (메모에 < > 같은 글자가 있어도 화면이 깨지지 않도록 textContent 사용)
+        if (entry.thumb) tr.querySelector("img").src = entry.thumb;
+        const memoCell = tr.querySelector(".memo");
+        memoCell.textContent = entry.memo || "(메모 없음)";
+        if (entry.fileName) {
+          const small = document.createElement("div");
+          small.className = "muted";
+          small.textContent = entry.fileName;
+          memoCell.appendChild(small);
+        }
+
+        // 이 줄의 삭제 버튼 (두 번 눌러야 지워짐)
+        const delBtn = tr.querySelector("button");
+        delBtn.addEventListener("click", function () {
+          confirmTap(delBtn, "한 번 더 누르면 삭제", function () {
+            deleteEntry(entry);
+          });
+        });
+        historyTableBody.appendChild(tr);
+      });
+    }
+
+    // 값 + (이전 기록 대비 변화량) 글자 만들기. 예) "172°" 아래에 작게 "+5°"
+    function cellWithDelta(value, prevValue, unit) {
+      if (value === null || value === undefined) return "-";
+      let html = value + unit;
+      if (prevValue !== null && prevValue !== undefined) {
+        const d = value - prevValue;
+        html += '<span class="delta">' + (d > 0 ? "+" : "") + d + unit + "</span>";
+      }
+      return html;
+    }
+
+    // 날짜 글자(ISO) → "2026.10.23 14:05" 모양으로
+    function formatDate(iso) {
+      const d = new Date(iso);
+      const two = function (n) { return String(n).padStart(2, "0"); }; // 5 → "05"
+      return d.getFullYear() + "." + two(d.getMonth() + 1) + "." + two(d.getDate()) +
+             " " + two(d.getHours()) + ":" + two(d.getMinutes());
+    }
+
+    // 기록 하나 지우기
+    async function deleteEntry(entry) {
+      if (cloudCol) {
+        try {
+          await cloudCol.doc(entry.id).delete();   // 표는 onSnapshot 이 다시 그림
+        } catch (e) {
+          showToast("지우지 못했습니다. 잠시 뒤 다시 시도하세요.");
+        }
+        return;
+      }
+      history = history.filter(function (h) { return h.id !== entry.id; });
+      saveHistory();
+      renderHistory();
+    }
+
+    // 버튼 연결
+    recordBtn.addEventListener("click", recordSwing);
+    clearHistoryBtn.addEventListener("click", function () {
+      if (history.length === 0) return;
+      confirmTap(clearHistoryBtn, "한 번 더 누르면 전부 삭제 (되돌릴 수 없음)", async function () {
+        if (cloudCol) {
+          // 한 번에 하나씩 지움
+          for (const entry of history.slice()) {
+            try { await cloudCol.doc(entry.id).delete(); } catch (e) { /* 다음 것 계속 */ }
+          }
+          return;
+        }
+        history = [];
+        saveHistory();
+        renderHistory();
+      });
+    });
+
+    // ----------------------------------------------------------
+    // [18] 공이 잘못 맞는 이유 (몸 동작 → 구질 연결)
+    // ----------------------------------------------------------
+    // 생각의 흐름:
+    //  - 공의 방향·휘어짐은 "클럽 페이스 방향 + 스윙 궤도"로 정해지지만, 이 앱은 클럽을 못 봅니다.
+    //  - 대신 몸 동작 중 "이런 구질을 만들기 쉬운" 동작이 영상에 보이는지 찾아서
+    //    「동작 → 왜 → 구질」 순서로 설명합니다.
+    //  - 측정값은 위의 [10] computeMetrics() 결과(M)와 [1]의 LIMIT 기준을 그대로 씁니다.
+
+    const flightSelect    = document.getElementById("flightSelect");
+    const flightDesc      = document.getElementById("flightDesc");
+    const flightHandNote  = document.getElementById("flightHandNote");
+    const causeTableBody  = document.getElementById("causeTableBody");
+    const flightTableBody = document.getElementById("flightTableBody");
+
+    // (18-1) 구질 목록 (방향은 오른손잡이 기준. 왼손잡이는 좌우가 반대)
+    const FLIGHTS = {
+      slice: { name: "슬라이스", desc: "공이 오른쪽으로 크게 휘어 나갑니다. 임팩트 때 클럽 페이스가 스윙 궤도보다 열려 있을 때 생기며, 흔히 바깥에서 안으로 깎아 치는(아웃-인) 궤도와 함께 나옵니다." },
+      hook:  { name: "훅", desc: "공이 왼쪽으로 크게 휘어 나갑니다. 임팩트 때 클럽 페이스가 스윙 궤도보다 닫혀 있을 때 생깁니다. 손목을 급하게 돌리면(플립) 잘 나옵니다." },
+      push:  { name: "푸시 (오른쪽 일직선)", desc: "공이 처음부터 오른쪽으로 곧게 나갑니다. 궤도가 안에서 밖(인-아웃)이고 페이스도 그쪽을 볼 때 생깁니다. 몸만 돌고 팔·클럽이 늦게 따라올 때 흔합니다." },
+      pull:  { name: "풀 (왼쪽 일직선)", desc: "공이 처음부터 왼쪽으로 곧게 나갑니다. 궤도가 밖에서 안(아웃-인)이고 페이스도 그쪽을 볼 때 생깁니다. 다운스윙을 상체·어깨로 시작하면 흔합니다." },
+      top:   { name: "토핑", desc: "공의 윗부분을 쳐서 낮게 깔려 굴러갑니다. 몸이 일어서거나 클럽의 가장 낮은 지점이 높아질 때 생깁니다." },
+      fat:   { name: "뒤땅 / 티 아래 맞음", desc: "공보다 뒤를 먼저 칩니다. 드라이버에서는 클럽이 공 아래로 지나가 맞는 형태로 나타나기도 합니다. 클럽의 가장 낮은 지점이 공보다 뒤에 있을 때 생깁니다." },
+      sky:   { name: "스카이볼 (높이 뜨고 짧음)", desc: "드라이버 윗부분에 맞아 공이 높이만 뜹니다. 위에서 아래로 가파르게 찍어 칠 때 생깁니다." },
+      shank: { name: "생크", desc: "클럽 목(호젤)에 맞아 오른쪽으로 튀어 나갑니다. 다운스윙 중 몸이나 손이 공 쪽으로 다가갈 때 생기기 쉽습니다." },
+      short: { name: "비거리 부족 (힘없이 맞음)", desc: "공이 생각보다 멀리 가지 않습니다. 몸의 힘이 클럽에 잘 전달되지 않거나 정타가 안 맞을 때 생깁니다." }
+    };
+
+    // (18-2) 원인이 되는 몸 동작 목록
+    //  check(M) 결과: { hit: true(보임) / false(안 보임) / null(측정 불가), evidence: "근거 글자" }
+    //  flights: 이 동작 때문에 나오기 쉬운 구질
+    const CAUSES = [
+      {
+        name: "몸이 팔보다 먼저 리드됨 (팔·클럽이 늦게 따라옴)",
+        flights: ["slice", "push", "short"],
+        why: "하체와 몸통이 너무 빨리 돌아 팔과 클럽이 뒤처지면, 클럽 페이스가 다 닫히기 전에 공을 맞히게 됩니다. 그래서 페이스가 열린 채 맞아 슬라이스나 오른쪽으로 밀리는 푸시가 나오기 쉽습니다.",
+        fix: "하프 스윙으로 임팩트 때 가슴이 아직 공을 보고 있는 느낌을 연습하세요. 다운스윙 초반에 팔을 몸 앞에 둔 채 함께 돌리는 느낌이 도움이 됩니다.",
+        check: function (M) {
+          const v = M.shoulder.impact;
+          if (isImage || v === null) return { hit: null, evidence: isImage ? "영상 필요" : "측정 불가" };
+          if (viewSelect.value === "dtl") return { hit: null, evidence: "측면 영상의 회전은 3D 추정이라 오차가 커서 판단하지 않음 (참고: 임팩트 어깨 회전 약 " + fmt(v, "°") + ")" };
+          return { hit: v > 35, evidence: "임팩트 때 어깨가 어드레스보다 약 " + fmt(v, "°") + " 돌아가 있음 (약 35° 이상이면 의심, 회전 추정은 오차 큼)" };
+        }
+      },
+      {
+        name: "몸 회전이 멈추고 팔·손으로만 침",
+        flights: ["hook", "pull", "top"],
+        why: "임팩트 때 골반 회전이 멈추면 팔과 손이 몸을 앞질러 나가면서 손목이 급하게 뒤집힙니다(플립). 페이스가 확 닫히면 훅, 궤도가 몸 쪽으로 감기면 풀이 나기 쉽습니다.",
+        fix: "임팩트 후에도 배꼽이 타깃을 볼 때까지 골반을 계속 돌리는 연습을 하세요. 클럽 없이 양손을 가슴 앞에 모으고 몸통으로만 돌리는 연습도 좋습니다.",
+        check: function (M) {
+          const v = M.hip.impact;
+          if (isImage || v === null) return { hit: null, evidence: isImage ? "영상 필요" : "측정 불가" };
+          if (viewSelect.value === "dtl") return { hit: null, evidence: "측면 영상의 회전은 3D 추정이라 오차가 커서 판단하지 않음 (참고: 임팩트 골반 회전 약 " + fmt(v, "°") + ")" };
+          return { hit: v < 15, evidence: "임팩트 때 골반이 어드레스보다 약 " + fmt(v, "°") + " 돌아가 있음 (약 15° 미만이면 의심)" };
+        }
+      },
+      {
+        name: "얼리 익스텐션 (골반이 공 쪽으로 나옴)",
+        flights: ["push", "hook", "shank", "top"],
+        why: "골반이 공 쪽으로 나오면 팔이 지나갈 공간이 없어집니다. 손이 막히면 오른쪽으로 밀리고(푸시), 막힌 손을 급하게 돌리면 훅이 나며, 몸이 공에 가까워지면 생크도 나기 쉽습니다.",
+        fix: "엉덩이 뒤에 의자를 두고 임팩트까지 엉덩이가 의자에 닿아 있도록 스윙하세요.",
+        check: function (M) {
+          if (isImage) return { hit: null, evidence: "영상 필요" };
+          if (viewSelect.value !== "dtl") return { hit: null, evidence: "측면 촬영 영상에서만 확인 가능" };
+          const hip = M.hipBall.impact;
+          const loss = (M.spine.address !== null && M.spine.impact !== null) ? M.spine.address - M.spine.impact : null;
+          if (hip === null && loss === null) return { hit: null, evidence: "측정 불가" };
+          return { hit: (hip !== null && hip > LIMIT.hipToBall) || (loss !== null && loss > LIMIT.spineLoss),
+                   evidence: "골반 공 쪽 이동 " + fmt(hip, "%") + ", 척추 앞숙임 변화 " + fmt(loss === null ? null : -loss, "°") };
+        }
+      },
+      {
+        name: "머리 스웨이 (백스윙 때 몸이 옆으로 밀림)",
+        flights: ["fat", "top", "short"],
+        why: "백스윙 때 몸이 타깃 반대쪽으로 밀리면, 다운스윙에서 제자리로 돌아오지 못해 클럽의 가장 낮은 지점이 공보다 뒤에 생깁니다. 그래서 뒤땅이나, 그걸 피하려다 토핑이 나기 쉽습니다.",
+        fix: "트레일 발 바깥쪽에 막대나 의자를 두고, 골반이 밀리지 않게 제자리에서 회전하는 연습을 하세요.",
+        check: function (M) {
+          if (isImage) return { hit: null, evidence: "영상 필요" };
+          if (viewSelect.value !== "face") return { hit: null, evidence: "정면 촬영 영상에서만 확인 가능" };
+          const sway = M.headX.top === null ? null : -M.headX.top;
+          if (sway === null) return { hit: null, evidence: "측정 불가" };
+          return { hit: sway > LIMIT.sway, evidence: "탑에서 머리가 타깃 반대쪽으로 어깨폭의 " + fmt(sway, "%") + " 이동" };
+        }
+      },
+      {
+        name: "치킨윙 (임팩트 후 리드 팔이 접힘)",
+        flights: ["slice", "push", "short"],
+        why: "리드 팔꿈치가 굽으며 빠지면 클럽 페이스가 돌아가지(닫히지) 못하고 열린 채 공을 지나갑니다. 그래서 슬라이스나 힘없이 오른쪽으로 가는 공이 나오기 쉽습니다.",
+        fix: "하프 스윙으로 임팩트 후 양팔을 쭉 뻗은 채 몸통으로 돌려 주세요. 리드 겨드랑이에 수건을 끼우고 치는 연습도 좋습니다.",
+        check: function (M) {
+          if (!isImage && viewSelect.value === "dtl") return { hit: null, evidence: "정면 촬영 영상에서만 확인 가능 (측면은 팔 각도가 왜곡됨)" };
+          if (isImage || M.followArm === null) return { hit: null, evidence: isImage ? "영상 필요" : "측정 불가" };
+          return { hit: M.followArm < LIMIT.chickenWing, evidence: "임팩트 직후 리드 팔 최소 " + fmt(M.followArm, "°") };
+        }
+      },
+      {
+        name: "오버스윙 (백스윙이 너무 김, 간접 추정)",
+        flights: ["slice", "hook", "top"],
+        why: "백스윙이 지나치게 길면 클럽이 내려오는 길이 길어져 몸과 팔의 타이밍이 자주 어긋납니다. 페이스가 늦게 돌아오면 슬라이스, 급하게 돌리면 훅이 나는 등 구질이 들쭉날쭉해집니다.",
+        fix: "거울 앞에서 리드 팔을 편 채 ¾ 높이에서 멈추는 연습을 하세요. 백스윙이 짧아져도 몸 회전이 충분하면 비거리는 크게 줄지 않습니다.",
+        check: function (M) {
+          if (isImage || M.leadArm.top === null) return { hit: null, evidence: isImage ? "영상 필요" : "측정 불가" };
+          return { hit: M.leadArm.top < LIMIT.overswingArm, evidence: "탑에서 리드 팔 " + fmt(M.leadArm.top, "°") + " (팔이 많이 굽으면 의심)" };
+        }
+      },
+      {
+        name: "백스윙 때 트레일 무릎이 펴짐",
+        flights: ["top", "slice"],
+        why: "뒤쪽 무릎이 펴지면 골반이 과하게 돌고 몸이 위로 일어섭니다. 다운스윙에서 높이를 되찾지 못하면 토핑이 나고, 상체가 덤비며 깎아 치면 슬라이스가 나기 쉽습니다.",
+        fix: "백스윙 내내 트레일 무릎의 굽힘을 유지하는 느낌으로, 무릎 안쪽에 공을 끼우고 연습해 보세요.",
+        check: function (M) {
+          if (isImage) return { hit: null, evidence: "영상 필요" };
+          const a = M.kneeTrail.address, t = M.kneeTrail.top;
+          if (a === null || t === null) return { hit: null, evidence: "측정 불가" };
+          return { hit: a - t > LIMIT.kneeStraighten, evidence: "트레일 무릎 굽힘 변화 " + fmt(t - a, "°") };
+        }
+      },
+      {
+        name: "임팩트 때 몸이 일어섬 (머리가 올라감)",
+        flights: ["top", "short"],
+        why: "임팩트 때 상체가 일어서면 클럽도 같이 올라가 공의 윗부분을 치게 됩니다.",
+        fix: "임팩트 후 공이 있던 자리를 잠깐 더 본다는 느낌으로, 하프 스윙부터 높이를 유지하는 연습을 하세요.",
+        check: function (M) {
+          const v = M.headY.impact;
+          if (isImage || v === null) return { hit: null, evidence: isImage ? "영상 필요" : "측정 불가" };
+          return { hit: v < -LIMIT.headVertical, evidence: "임팩트 때 머리가 몸통 길이의 " + fmt(Math.abs(v), "%") + " " + (v < 0 ? "올라감" : "내려감") };
+        }
+      },
+      {
+        name: "임팩트 때 몸이 주저앉음 (머리가 내려감)",
+        flights: ["fat", "sky"],
+        why: "임팩트 때 몸이 내려앉으면 클럽의 가장 낮은 지점도 내려가 공 뒤나 아래를 치게 됩니다. 드라이버에서는 공 아래가 맞아 스카이볼이 나기도 합니다.",
+        fix: "어드레스 높이를 유지한 채 하프 스윙으로 티만 쓸어 치는 연습을 하세요.",
+        check: function (M) {
+          const v = M.headY.impact;
+          if (isImage || v === null) return { hit: null, evidence: isImage ? "영상 필요" : "측정 불가" };
+          return { hit: v > LIMIT.headVertical, evidence: "임팩트 때 머리가 몸통 길이의 " + fmt(Math.abs(v), "%") + " " + (v < 0 ? "올라감" : "내려감") };
+        }
+      },
+      {
+        name: "다운스윙 전환이 급함 (템포가 빠름)",
+        flights: ["slice", "pull", "sky"],
+        why: "백스윙에 비해 다운스윙을 너무 급하게 시작하면 하체보다 어깨·팔이 먼저 덤벼(엎어 치기) 클럽이 바깥에서 안으로, 위에서 아래로 가파르게 내려옵니다. 그래서 풀, 슬라이스, 스카이볼이 나기 쉽습니다.",
+        fix: "백스윙 탑에서 아주 잠깐 멈췄다가 하체부터 내려오는 연습을 하세요. \"하나-둘-셋(올리기), 넷(치기)\" 같은 박자 세기도 도움이 됩니다.",
+        check: function (M) {
+          const r = M.tempo.ratio;
+          if (isImage || r === null) return { hit: null, evidence: isImage ? "영상 필요" : "측정 불가" };
+          return { hit: r < 2.2, evidence: "템포 " + r.toFixed(1) + " : 1 (약 2.2 : 1보다 작으면 의심, 30fps 영상은 오차 큼)" };
+        }
+      },
+      {
+        name: "임팩트 때 머리·체중이 뒤에 남음 (아이언·우드·웨지)",
+        flights: ["fat", "top", "short"],
+        why: "바닥의 공을 칠 때 머리와 체중이 뒤에 남으면 클럽의 가장 낮은 지점이 공 뒤로 갑니다. 그래서 공보다 땅을 먼저 치거나(뒤땅), 그걸 피하다 공 윗부분을 칩니다(토핑).",
+        fix: "임팩트 때 리드 발에 체중이 70~80% 실린 느낌으로, 공 앞쪽 바닥(타깃 쪽)에 디봇이 나도록 연습하세요. 공 앞에 동전을 두고 동전까지 쓸어 치는 연습도 좋습니다.",
+        check: function (M) {
+          if (isImage) return { hit: null, evidence: "영상 필요" };
+          if (clubProfile().impactHead === "behind") return { hit: null, evidence: "드라이버는 머리가 공 뒤에 남는 것이 일반적이라 해당 없음" };
+          if (viewSelect.value !== "face") return { hit: null, evidence: "정면 촬영 영상에서만 확인 가능" };
+          const v = M.headX.impact;
+          if (v === null) return { hit: null, evidence: "측정 불가" };
+          return { hit: v < -15, evidence: "임팩트 때 머리가 어드레스보다 " + (v >= 0 ? "타깃 쪽으로 " : "타깃 반대쪽으로 ") + fmt(Math.abs(v), "%") + " 이동 (어깨폭 대비, 뒤로 15% 넘으면 의심)" };
+        }
+      },
+      {
+        name: "임팩트 때 머리가 타깃 쪽으로 먼저 나감 (드라이버)",
+        flights: ["sky", "slice", "pull"],
+        why: "드라이버에서 몸과 머리가 공보다 먼저 타깃 쪽으로 나가면, 클럽이 올라가며 맞지 못하고 위에서 아래로 찍혀 내려옵니다. 그래서 스카이볼이나 깎아 치는 슬라이스·풀이 나기 쉽습니다.",
+        fix: "임팩트 때 머리가 공 뒤에 있는지 확인하세요. 어드레스에서 척추를 타깃 반대쪽으로 살짝 기울이고, 그 기울기를 임팩트까지 유지하는 연습이 도움이 됩니다.",
+        check: function (M) {
+          if (isImage) return { hit: null, evidence: "영상 필요" };
+          if (clubProfile().impactHead !== "behind") return { hit: null, evidence: "드라이버를 골랐을 때만 판단" };
+          if (viewSelect.value !== "face") return { hit: null, evidence: "정면 촬영 영상에서만 확인 가능" };
+          const v = M.headX.impact;
+          if (v === null) return { hit: null, evidence: "측정 불가" };
+          return { hit: v > 15, evidence: "임팩트 때 머리가 어드레스보다 " + (v >= 0 ? "타깃 쪽으로 " : "타깃 반대쪽으로 ") + fmt(Math.abs(v), "%") + " 이동 (어깨폭 대비, 앞으로 15% 넘으면 의심)" };
+        }
+      },
+      {
+        name: "아웃-인 궤도 (엎어 치기)",
+        flights: ["slice", "pull"],
+        why: "클럽이 바깥에서 안쪽으로 공을 가로질러 지나가면 공에 왼쪽 방향과 오른쪽 회전이 함께 걸립니다. 슬라이스의 가장 흔한 원인입니다.",
+        fix: "공 바깥쪽에 헤드 커버를 두고 건드리지 않게 안쪽에서 클럽을 내리는 연습을 하세요.",
+        check: function () { return { hit: null, evidence: "클럽 궤도는 이 앱이 측정하지 못함" }; }
+      },
+      {
+        name: "그립 / 클럽 페이스 방향",
+        flights: ["slice", "hook", "push", "pull"],
+        why: "그립이 너무 약하면(손이 타깃 쪽으로 돌아감) 페이스가 열리기 쉽고, 너무 강하면 닫히기 쉽습니다. 몸 동작이 좋아도 그립 때문에 휠 수 있습니다.",
+        fix: "어드레스 때 리드 손 너클이 2~3개 보이는지 확인해 보세요. 레슨 프로에게 그립 점검을 받는 것도 좋습니다.",
+        check: function () { return { hit: null, evidence: "그립과 클럽 페이스는 이 앱이 측정하지 못함" }; }
+      }
+    ];
+
+    // (18-3) 구질 이름들을 작은 배지(알약 모양)로
+    function flightBadges(keys) {
+      return keys.map(function (k) { return '<span class="badge warn">' + FLIGHTS[k].name + "</span>"; }).join(" ");
+    }
+
+    // (18-4) 표 두 개를 그립니다. (renderAll 에서 호출)
+    function renderBallFlight(M) {
+      flightHandNote.textContent = handSelect.value === "left"
+        ? " (왼손잡이는 아래 설명의 좌우 방향이 반대입니다.)"
+        : " (좌우 방향은 오른손잡이 기준입니다.)";
+
+      // ① 내 영상에서 "보인" 동작만 모아서 보여 주기
+      causeTableBody.innerHTML = "";
+      if (!M) {
+        causeTableBody.innerHTML = '<tr><td colspan="5" class="hint">분석 후 표시됩니다.</td></tr>';
+      } else {
+        const found = CAUSES.filter(function (c) { return c.check(M).hit === true; });
+        if (found.length === 0) {
+          causeTableBody.innerHTML = '<tr><td colspan="5" class="hint">' +
+            "이 영상에서는 구질을 망칠 만한 뚜렷한 몸 동작이 보이지 않았습니다. " +
+            "공이 계속 휜다면 이 앱이 보지 못하는 클럽 궤도나 그립이 원인일 수 있습니다. 반대쪽 방향으로 찍은 영상으로도 확인해 보세요.</td></tr>";
+        }
+        found.forEach(function (c) {
+          const tr = document.createElement("tr");
+          tr.innerHTML =
+            '<td class="left"><b>' + c.name + "</b></td>" +
+            '<td class="left">' + c.check(M).evidence + "</td>" +
+            '<td class="left">' + c.why + "</td>" +
+            "<td>" + flightBadges(c.flights) + "</td>" +
+            '<td class="left">' + c.fix + "</td>";
+          causeTableBody.appendChild(tr);
+        });
+      }
+
+      // ② 고른 구질의 흔한 원인 + 내 영상에서 보였는지
+      const key = flightSelect.value;
+      flightDesc.innerHTML = "<b>" + FLIGHTS[key].name + "</b> — " + FLIGHTS[key].desc;
+      flightTableBody.innerHTML = "";
+      CAUSES.filter(function (c) { return c.flights.indexOf(key) >= 0; }).forEach(function (c) {
+        let badge;
+        if (!M) {
+          badge = '<span class="badge na">분석 전</span>';
+        } else {
+          const r = c.check(M);
+          badge = r.hit === true  ? '<span class="badge warn">보임</span>' :
+                  r.hit === false ? '<span class="badge good">안 보임</span>' :
+                                    '<span class="badge na">확인 불가</span>';
+          badge += '<span class="delta">' + r.evidence + "</span>";
+        }
+        const tr = document.createElement("tr");
+        tr.innerHTML =
+          '<td class="left"><b>' + c.name + "</b></td>" +
+          "<td>" + badge + "</td>" +
+          '<td class="left">' + c.why + "</td>";
+        flightTableBody.appendChild(tr);
+      });
+    }
+
+    // (18-5) 구질 선택 목록 채우기 + 바꾸면 다시 그리기
+    Object.keys(FLIGHTS).forEach(function (k) {
+      const option = document.createElement("option");
+      option.value = k;
+      option.textContent = FLIGHTS[k].name;
+      flightSelect.appendChild(option);
+    });
+    flightSelect.addEventListener("change", function () { renderBallFlight(computeMetrics()); });
+
+    // ----------------------------------------------------------
+    // [19] 공 · 클럽헤드 터치 (임팩트 정밀 찾기 / 올려 치기·내려 치기)
+    // ----------------------------------------------------------
+    // 이 앱의 AI는 사람 관절만 찾고 공과 클럽은 못 찾습니다.
+    // 그래서 사용자가 영상 속 공과 클럽헤드를 직접 터치하면, 그 위치로 계산합니다.
+    //  ① 공: 공 자리의 밝기가 크게 바뀌는(공이 맞아 사라지는) 프레임 = 임팩트
+    //  ② 클럽헤드: 임팩트 앞뒤 몇 장면의 헤드 위치를 곡선으로 이어,
+    //     공 위치에서 곡선이 올라가는지(올려 치기) 내려가는지(내려 치기) 기울기를 잽니다.
+    //     정면 영상에서는 타깃 방향이 화면 좌우, 위아래가 화면 위아래라서 이 기울기가 그대로 보입니다.
+
+    const ballTapBtn    = document.getElementById("ballTapBtn");
+    const ballFindBtn   = document.getElementById("ballFindBtn");
+    const ballMsg       = document.getElementById("ballMsg");
+    const clubTapBtn    = document.getElementById("clubTapBtn");
+    const touchPrevBtn  = document.getElementById("touchPrevBtn");
+    const touchNextBtn  = document.getElementById("touchNextBtn");
+    const clubUndoBtn   = document.getElementById("clubUndoBtn");
+    const clubClearBtn  = document.getElementById("clubClearBtn");
+    const clubTableBody = document.getElementById("clubTableBody");
+    const attackResult  = document.getElementById("attackResult");
+    const touchViewWarn = document.getElementById("touchViewWarn");
+
+    let tapMode = null;      // 지금 터치로 찍는 것: null(안 찍음) / "ball" / "club"
+    let ball = null;         // 공 위치 { x, y, r(살펴볼 반지름 px), t(찍은 시간) }
+    let ballImpactT = null;  // 공이 사라진 시간 (초)
+    let clubPts = [];        // 클럽헤드 점들 [{ t, x, y }, ...] (시간 순)
+    let attackFit = null;    // 어택 앵글 계산 결과 (그림 그리기에도 사용)
+    let tapSeq = 0;          // 점을 찍은 순서 번호 (「마지막 점 지우기」용)
+
+    // (19-1) 새 파일을 열면 모두 지우기
+    function resetTouch() {
+      setTapMode(null);
+      ball = null;
+      ballImpactT = null;
+      clubPts = [];
+      flightPts = [];        // ③ 날아가는 공 점
+      ballMsg.textContent = "";
+      renderTouch();
+    }
+
+    // (19-2) 터치 모드 켜고 끄기
+    //   터치하는 동안에는 캔버스가 터치를 받도록 바꿉니다. (평소에는 영상 조작이 되도록 통과)
+    function setTapMode(mode) {
+      tapMode = mode;
+      overlay.style.pointerEvents = mode ? "auto" : "none";
+      mediaBox.classList.toggle("tapping", !!mode);
+      clubTapBtn.textContent = mode === "club" ? "✅ 클럽헤드 찍기 끝내기" : "✋ 클럽헤드 찍기 시작";
+      ballTapBtn.textContent = mode === "ball" ? "영상 속 공을 터치하세요…" : "🎯 공 위치 찍기";
+      flightTapBtn.textContent = mode === "flight" ? "✅ 날아가는 공 찍기 끝내기" : "⚾ 날아가는 공 찍기 시작";
+      if (mode) video.pause();
+    }
+
+    // 버튼을 누를 수 있는지 정하기 ([4] updateAnalyzeButton 에서 함께 호출)
+    function updateTouchButtons() {
+      const videoOk = mediaReady && !isImage && !analyzing;
+      ballTapBtn.disabled = !videoOk;
+      clubTapBtn.disabled = !videoOk;
+      ballFindBtn.disabled = !(videoOk && ball && frames.length > 0);
+      clubUndoBtn.disabled = clubClearBtn.disabled = clubPts.length === 0;
+      flightTapBtn.disabled = !videoOk;
+      flightUndoBtn.disabled = flightClearBtn.disabled = flightPts.length === 0;
+    }
+
+    // (19-3) 화면에서 터치한 위치 → 영상의 실제 픽셀 좌표
+    //   영상이 상자 안에 "여백을 두고" 맞춰질 수 있어서(object-fit: contain) 여백만큼 빼고 계산합니다.
+    function toMediaXY(ev) {
+      const rect = overlay.getBoundingClientRect();
+      const scale = Math.min(rect.width / mediaW, rect.height / mediaH);
+      const offX = (rect.width - mediaW * scale) / 2;
+      const offY = (rect.height - mediaH * scale) / 2;
+      const x = (ev.clientX - rect.left - offX) / scale;
+      const y = (ev.clientY - rect.top - offY) / scale;
+      if (x < 0 || y < 0 || x > mediaW || y > mediaH) return null;  // 영상 밖(여백)을 누름
+      return { x: x, y: y };
+    }
+
+    // 공 자리에서 살펴볼 반지름 (공 안쪽만 보도록 작게)
+    //   골프공 지름(약 4.3cm)은 몸통 길이(약 50cm)의 약 9% → 반지름의 절반 정도인 2.5%만 사용
+    function ballRadius() {
+      const base = (frames.length && phases.address >= 0) ? torsoLength(phases.address) * 0.025 : mediaW * 0.006;
+      return Math.max(3, Math.min(base, mediaW * 0.03));
+    }
+
+    // 영상 위를 터치했을 때
+    overlay.addEventListener("click", function (ev) {
+      if (!tapMode) return;
+      const p = toMediaXY(ev);
+      if (!p) return;
+      if (tapMode === "ball") {
+        ball = { x: p.x, y: p.y, r: ballRadius(), t: video.currentTime };
+        ballImpactT = null;
+        ballMsg.textContent = "공 위치를 찍었습니다 (" + video.currentTime.toFixed(2) + "초 장면). 이제 「공이 사라지는 장면 찾기」를 누르세요.";
+        setTapMode(null);
+      } else if (tapMode === "flight") {
+        // ③ 날아가는 공: 같은 장면에 찍은 점이 있으면 바꾸고, 없으면 추가
+        const t = video.currentTime;
+        flightPts = flightPts.filter(function (q) { return Math.abs(q.t - t) > 0.0005; });
+        flightPts.push({ t: t, x: p.x, y: p.y, seq: ++tapSeq });
+        flightPts.sort(function (a, b) { return a.t - b.t; });
+      } else {
+        // 같은 장면(시간)에 찍은 점이 있으면 바꾸고, 없으면 추가
+        const t = video.currentTime;
+        clubPts = clubPts.filter(function (q) { return Math.abs(q.t - t) > 0.0005; });
+        clubPts.push({ t: t, x: p.x, y: p.y, seq: ++tapSeq });  // seq: 찍은 순서
+        clubPts.sort(function (a, b) { return a.t - b.t; });
+      }
+      renderTouch();
+      updateTouchButtons();
+    });
+
+    // (19-4) 공 자리의 작은 네모 영역을 회색조 숫자 배열로 읽기
+    const sampleCanvas = document.createElement("canvas");
+    const sampleCtx = sampleCanvas.getContext("2d", { willReadFrequently: true });
+    function samplePatch() {
+      const r = Math.max(2, Math.round(ball.r));
+      const size = r * 2;
+      sampleCanvas.width = size;
+      sampleCanvas.height = size;
+      // 영상에서 공 주변 size×size 만 잘라 그림
+      sampleCtx.drawImage(video, ball.x - r, ball.y - r, size, size, 0, 0, size, size);
+      const d = sampleCtx.getImageData(0, 0, size, size).data;  // [빨강, 초록, 파랑, 투명도, ...]
+      const gray = new Float32Array(size * size);
+      for (let k = 0; k < gray.length; k++) {
+        gray[k] = 0.299 * d[k * 4] + 0.587 * d[k * 4 + 1] + 0.114 * d[k * 4 + 2]; // 밝기
+      }
+      return gray;
+    }
+    // 두 영역의 평균 밝기 차이 (0 = 똑같음, 클수록 많이 바뀜)
+    function patchDiff(a, b) {
+      let sum = 0;
+      for (let k = 0; k < a.length; k++) sum += Math.abs(a[k] - b[k]);
+      return sum / a.length;
+    }
+
+    // (19-5) 공이 사라지는 장면 찾기
+    //   생각의 흐름:
+    //    - 공을 찍은 장면의 공 자리 모습을 "기준"으로 저장
+    //    - 백스윙 탑 이후 장면들을 차례로 넘기며 같은 자리의 모습과 비교
+    //    - 차이가 크게 생기고 그 뒤로도 계속 큰 첫 장면 = 클럽이 공에 닿아 공이 떠난 순간
+    //      (잠깐 가려졌다 다시 보이는 경우는 "계속 큰" 조건으로 걸러냄)
+    async function findBallImpact() {
+      if (!ball || analyzing || !frames.length) return;
+      analyzing = true;
+      updateAnalyzeButton();
+      setTapMode(null);
+      try {
+        video.pause();
+        // 기준 모습은 백스윙 탑 장면(공은 그대로 있고 클럽은 멀리 있음)에서 잡습니다.
+        // 어드레스 장면은 클럽헤드가 공에 붙어 있어서, 테이크어웨이 때 이미 모습이 바뀌기 때문입니다.
+        const topT = phases.top >= 0 ? frames[phases.top].t : ball.t;
+        const startT = Math.max(ball.t, topT);
+        await seekTo(startT);
+        const ref = samplePatch();   // 기준 모습 (공이 있는 상태)
+        let end = Number(endInput.value) || video.duration;
+        end = Math.min(end, video.duration);
+        // 슬로모션 영상도 놓치지 않도록 1초에 최소 60장면 간격으로 살펴봄
+        const step = 1 / Math.max(fps, 60);
+
+        const times = [], diffs = [];
+        progressBar.style.display = "block";
+        const total = Math.max(1, Math.floor((end - startT) / step) + 1);
+        for (let i = 0; i < total; i++) {
+          const t = startT + i * step;
+          await seekTo(t);
+          times.push(t);
+          diffs.push(patchDiff(ref, samplePatch()));
+          progressBar.value = Math.round((i + 1) / total * 100);
+        }
+
+        // 기준값: 차이가 작은 쪽 20% 지점(공이 그대로 있을 때의 흔들림 정도)의 3배 + 여유
+        const sorted = diffs.slice().sort(function (a, b) { return a - b; });
+        const base = sorted[Math.floor(sorted.length * 0.2)] || 0;
+        const threshold = Math.max(18, base * 3 + 8);
+
+        // 차이가 기준을 넘고, 그다음 2장면도 계속 넘는 첫 장면
+        let found = -1;
+        for (let i = 0; i < diffs.length && found < 0; i++) {
+          if (diffs[i] <= threshold) continue;
+          let stays = true;
+          for (let j = 1; j <= 2 && i + j < diffs.length; j++) {
+            if (diffs[i + j] <= threshold) stays = false;
+          }
+          if (stays) found = i;
+        }
+
+        if (found < 0) {
+          ballImpactT = null;
+          ballMsg.textContent = "⚠️ 공이 사라지는 장면을 찾지 못했습니다. 공을 정확히 찍었는지, 분석 끝 시간이 임팩트 뒤까지 들어가는지 확인하세요.";
+        } else {
+          ballImpactT = times[found];
+          // 자세 분석 프레임 중 가장 가까운 것을 임팩트로 지정
+          const idx = Math.max(0, Math.min(frames.length - 1, Math.round((ballImpactT - frames[0].t) * fps)));
+          phases.impact = idx;
+          if (phases.finish < idx) phases.finish = frames.length - 1;
+          ballMsg.textContent = "✅ 공 자리가 " + ballImpactT.toFixed(3) + "초에 바뀌었습니다 → 이 장면을 임팩트로 정했습니다. " +
+            "(살펴본 간격 " + (step * 1000).toFixed(0) + "ms, 이 간격만큼의 오차가 있을 수 있음)";
+          await seekTo(ballImpactT);
+        }
+      } catch (e) {
+        ballMsg.textContent = "❌ 공 장면을 살펴보는 중 오류가 났습니다: " + e.message;
+      } finally {
+        analyzing = false;
+        progressBar.style.display = "none";
+        updateAnalyzeButton();
+        renderAll();   // 임팩트가 바뀌었으니 각도·진단 표 다시 계산
+      }
+    }
+
+    // (19-6) 어택 앵글 계산
+    //   점들을 곡선 y = a·u² + b·u + c 로 잇습니다. (u = 가로 위치 - 공 위치)
+    //   공 위치(u = 0)에서 곡선의 기울기가 b 이므로, 기울기 각도 = 어택 앵글.
+    //   점이 2개뿐이면 직선으로 잇습니다.
+    function computeAttack() {
+      if (clubPts.length < 2) return null;
+      const pts = clubPts;
+      // 헤드가 화면에서 움직인 방향 (오른쪽 +1 / 왼쪽 -1)
+      const dir = Math.sign(pts[pts.length - 1].x - pts[0].x) || 1;
+      // 기준 가로 위치: 공을 찍었으면 공, 아니면 임팩트 시간에 가장 가까운 점
+      let xRef;
+      if (ball) {
+        xRef = ball.x;
+      } else {
+        const tI = phases.impact >= 0 ? frames[phases.impact].t : pts[0].t;
+        xRef = pts.reduce(function (best, p) { return Math.abs(p.t - tI) < Math.abs(best.t - tI) ? p : best; }).x;
+      }
+      const us = pts.map(function (p) { return p.x - xRef; });
+      const ys = pts.map(function (p) { return p.y; });
+
+      let a = 0, b;
+      const distinct = new Set(us.map(function (u) { return Math.round(u); })).size;
+      if (pts.length >= 3 && distinct >= 3) {
+        const q = fitQuadratic(us, ys);
+        a = q.a; b = q.b;
+      } else {
+        b = fitLine(us, ys).b;
+      }
+      if (b === null || isNaN(b)) return null;
+
+      // 화면의 y 는 아래로 갈수록 커지므로, 헤드가 진행 방향으로 갈 때 y 가 줄면 "올라감"
+      const angle = deg(Math.atan(-b * dir));
+
+      // 점 찍기 오차 추정: 헤드 크기의 절반쯤 잘못 찍는다고 가정 (몸통 길이의 약 4%)
+      const markErr = (frames.length && phases.address >= 0) ? torsoLength(phases.address) * 0.04 : mediaW * 0.01;
+      const span = Math.max.apply(null, us) - Math.min.apply(null, us);
+      const errDeg = span > 0 ? deg(Math.atan(2 * markErr / span)) : 90;
+
+      // 점들이 공의 앞뒤에 다 있는지 (한쪽에만 있으면 곡선을 늘려서 추측한 값)
+      const straddle = us.some(function (u) { return u * dir < 0; }) && us.some(function (u) { return u * dir > 0; });
+
+      // 곡선의 가장 낮은 지점(화면 y 가 가장 큰 곳)이 공보다 앞인지 뒤인지
+      let lowPoint = null;
+      if (a < 0) {
+        const uLow = -b / (2 * a);
+        lowPoint = uLow * dir > 0 ? "ahead" : "behind";
+      }
+      return { angle: angle, errDeg: errDeg, straddle: straddle, lowPoint: lowPoint,
+               a: a, b: b, xRef: xRef, dir: dir, n: pts.length, usedBall: !!ball,
+               uMin: Math.min.apply(null, us), uMax: Math.max.apply(null, us),
+               c: ys.length ? fitC(us, ys, a, b) : 0 };
+    }
+
+    // 직선 y = b·u + c 를 최소제곱법으로 맞추기 (점들과의 거리 제곱 합이 가장 작게)
+    function fitLine(us, ys) {
+      const n = us.length;
+      const mu = us.reduce(function (s, v) { return s + v; }, 0) / n;
+      const my = ys.reduce(function (s, v) { return s + v; }, 0) / n;
+      let sxy = 0, sxx = 0;
+      for (let i = 0; i < n; i++) { sxy += (us[i] - mu) * (ys[i] - my); sxx += (us[i] - mu) * (us[i] - mu); }
+      return { b: sxx === 0 ? null : sxy / sxx };
+    }
+
+    // 곡선 y = a·u² + b·u + c 를 최소제곱법으로 맞추기 (3×3 연립방정식 풀기)
+    function fitQuadratic(us, ys) {
+      let s0 = 0, s1 = 0, s2 = 0, s3 = 0, s4 = 0, t0 = 0, t1 = 0, t2 = 0;
+      for (let i = 0; i < us.length; i++) {
+        const u = us[i], u2 = u * u, y = ys[i];
+        s0 += 1; s1 += u; s2 += u2; s3 += u2 * u; s4 += u2 * u2;
+        t0 += y; t1 += u * y; t2 += u2 * y;
+      }
+      // | s4 s3 s2 | |a|   |t2|
+      // | s3 s2 s1 | |b| = |t1|
+      // | s2 s1 s0 | |c|   |t0|
+      const det3 = function (m) {
+        return m[0][0] * (m[1][1] * m[2][2] - m[1][2] * m[2][1]) -
+               m[0][1] * (m[1][0] * m[2][2] - m[1][2] * m[2][0]) +
+               m[0][2] * (m[1][0] * m[2][1] - m[1][1] * m[2][0]);
+      };
+      const M = [[s4, s3, s2], [s3, s2, s1], [s2, s1, s0]];
+      const D = det3(M);
+      if (Math.abs(D) < 1e-9) return { a: 0, b: fitLine(us, ys).b };
+      const Ma = [[t2, s3, s2], [t1, s2, s1], [t0, s1, s0]];
+      const Mb = [[s4, t2, s2], [s3, t1, s1], [s2, t0, s0]];
+      return { a: det3(Ma) / D, b: det3(Mb) / D };
+    }
+
+    // a, b 가 정해졌을 때 c(높이) 구하기 (그림 그릴 때 사용)
+    function fitC(us, ys, a, b) {
+      let s = 0;
+      for (let i = 0; i < us.length; i++) s += ys[i] - a * us[i] * us[i] - b * us[i];
+      return s / us.length;
+    }
+
+    // (19-7) 표와 결과 글자 그리기
+    function renderTouch() {
+      renderSpeed();   // ③ 속도 계산 결과
+      touchViewWarn.textContent = viewSelect.value === "dtl"
+        ? " ⚠️ 지금 촬영 방향이 「측면」입니다. 측면 영상에서는 헤드의 위아래 움직임이 화면 깊이 방향과 섞여 ②의 각도가 크게 틀립니다."
+        : "";
+
+      // 점 목록 표
+      clubTableBody.innerHTML = "";
+      if (clubPts.length === 0) {
+        clubTableBody.innerHTML = '<tr><td colspan="4" class="hint">아직 찍은 점이 없습니다.</td></tr>';
+      }
+      clubPts.forEach(function (p, k) {
+        let side = "-";
+        if (ball) {
+          const dirAll = clubPts.length > 1 ? (Math.sign(clubPts[clubPts.length - 1].x - clubPts[0].x) || 1) : 1;
+          side = (p.x - ball.x) * dirAll < 0 ? "공 전 (임팩트 직전)" : "공 지나서 (임팩트 직후)";
+        }
+        const tr = document.createElement("tr");
+        tr.innerHTML =
+          "<td>" + (k + 1) + "</td>" +
+          "<td>" + p.t.toFixed(3) + "</td>" +
+          "<td>" + Math.round(p.x) + ", " + Math.round(p.y) + "</td>" +
+          "<td>" + side + "</td>";
+        clubTableBody.appendChild(tr);
+      });
+
+      // 어택 앵글 결과
+      attackFit = computeAttack();
+      if (!attackFit) {
+        attackResult.innerHTML = clubPts.length < 2
+          ? "클럽헤드 점을 2개 이상 찍으면 결과가 나옵니다. (정확도를 위해 공 앞뒤로 3~5개 권장)"
+          : "점들의 가로 위치가 같아 기울기를 계산할 수 없습니다. 다른 장면에서 찍어 주세요.";
+        return;
+      }
+      const f = attackFit;
+      const sign = f.angle > 1 ? "올려 침 (어퍼 블로)" : f.angle < -1 ? "내려 침 (다운 블로)" : "거의 수평";
+      const lines = [];
+      lines.push("<b>어택 앵글 추정: " + (f.angle >= 0 ? "+" : "") + f.angle.toFixed(1) + "° → " + sign + "</b>" +
+                 " <span class=\"muted\">(오차 약 ±" + f.errDeg.toFixed(0) + "°, 점을 헤드 크기 절반쯤 잘못 찍는다고 가정)</span>");
+      if (f.errDeg >= Math.abs(f.angle)) {
+        lines.push("⚠️ 오차 범위가 측정값보다 커서 방향을 확신하기 어렵습니다. 점을 공 앞뒤로 더 넓게 찍어 보세요.");
+      }
+      if (!f.usedBall) lines.push("ℹ️ 공 위치를 찍지 않아 임팩트에 가장 가까운 점을 기준으로 계산했습니다. ①에서 공을 찍으면 더 정확합니다.");
+      if (f.usedBall && !f.straddle) lines.push("⚠️ 점이 공의 한쪽에만 있어서 곡선을 늘려 추측한 값입니다. 공을 지난 장면에서도 점을 찍어 주세요.");
+      if (f.lowPoint) {
+        lines.push(f.lowPoint === "ahead"
+          ? "클럽의 가장 낮은 지점이 <b>공보다 앞(타깃 쪽)</b>으로 추정됩니다. 공을 먼저 맞히고 지나가는 형태로, 아이언에서 흔히 권장되는 모습입니다."
+          : "클럽의 가장 낮은 지점이 <b>공보다 뒤</b>로 추정됩니다. 드라이버는 이렇게 낮은 지점을 지나 올라가며 맞는 경우가 많고, 아이언이라면 뒤땅·얇은 샷이 나기 쉬운 형태입니다.");
+      }
+      // 고른 클럽의 일반적인 방향과 비교
+      const club = clubProfile();
+      const sameDir = club.attack === "up" ? f.angle > 0 : club.attack === "down" ? f.angle < 0 : Math.abs(f.angle) <= 3;
+      lines.push("<b>" + club.name + " 기준:</b> " + club.attackText + " → 내 값은 " +
+                 (sameDir ? "일반적인 방향과 <b>같습니다</b>." : "일반적인 방향과 <b>다릅니다</b>.") +
+                 (f.errDeg >= Math.abs(f.angle) ? " (오차가 커서 참고만 하세요)" : ""));
+      lines.push("이 값은 2D 영상에 직접 찍은 점으로 낸 추정치이며, 측정 장비(론치 모니터)만큼 정확하지 않습니다.");
+      attackResult.innerHTML = lines.join("<br>");
+    }
+
+    // (19-8) 영상 위에 공·클럽헤드 표시 그리기 ([14] drawLoop 에서 매 화면 호출)
+    function drawTouchMarks() {
+      if (!ball && clubPts.length === 0 && flightPts.length === 0) return;
+      const scale = Math.max(mediaW, mediaH) / 600;
+      ctx.save();
+      // 공: 노란 원
+      if (ball) {
+        ctx.strokeStyle = "#ffd60a";
+        ctx.lineWidth = 2.5 * scale;
+        ctx.beginPath();
+        ctx.arc(ball.x, ball.y, Math.max(ball.r * 3, 9 * scale), 0, Math.PI * 2);
+        ctx.stroke();
+      }
+      // 맞춘 곡선 (점들이 있는 구간)과 공 위치의 기울기 화살표
+      if (attackFit) {
+        const f = attackFit;
+        ctx.strokeStyle = "rgba(255, 92, 205, 0.85)";
+        ctx.lineWidth = 2 * scale;
+        ctx.beginPath();
+        const steps = 30;
+        for (let k = 0; k <= steps; k++) {
+          const u = Math.min(f.uMin, 0) + (Math.max(f.uMax, 0) - Math.min(f.uMin, 0)) * k / steps;
+          const y = f.a * u * u + f.b * u + f.c;
+          if (k === 0) ctx.moveTo(f.xRef + u, y); else ctx.lineTo(f.xRef + u, y);
+        }
+        ctx.stroke();
+        // 공 위치에서의 진행 방향 화살표
+        const len = 60 * scale;
+        const ang = Math.atan(f.b);           // 화면 기준 기울기
+        const x0 = f.xRef, y0 = f.c;
+        const x1 = x0 + Math.cos(ang) * len * f.dir, y1 = y0 + Math.sin(ang) * len * f.dir;
+        ctx.strokeStyle = "#ffffff";
+        ctx.lineWidth = 3 * scale;
+        ctx.beginPath(); ctx.moveTo(x0, y0); ctx.lineTo(x1, y1); ctx.stroke();
+        ctx.fillStyle = "#ffffff";
+        ctx.beginPath(); ctx.arc(x1, y1, 4 * scale, 0, Math.PI * 2); ctx.fill();
+      }
+      // 클럽헤드 점: 분홍 점 + 번호 (지금 장면의 점은 크게)
+      ctx.font = "bold " + (12 * scale) + "px sans-serif";
+      clubPts.forEach(function (p, k) {
+        const now = Math.abs(p.t - video.currentTime) < 0.0005;
+        ctx.fillStyle = now ? "#ff2fb3" : "rgba(255, 92, 205, 0.9)";
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, (now ? 7 : 5) * scale, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.fillStyle = "#ffffff";
+        ctx.fillText(String(k + 1), p.x + 7 * scale, p.y - 7 * scale);
+      });
+      // ③ 날아가는 공 점: 하늘색 점 + B번호
+      flightPts.forEach(function (p, k) {
+        const now = Math.abs(p.t - video.currentTime) < 0.0005;
+        ctx.fillStyle = now ? "#00c2ff" : "rgba(63, 215, 255, 0.9)";
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, (now ? 6 : 4.5) * scale, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.fillStyle = "#ffffff";
+        ctx.fillText("B" + (k + 1), p.x + 7 * scale, p.y - 7 * scale);
+      });
+      ctx.restore();
+    }
+
+    // (19-9) 버튼 연결
+    ballTapBtn.addEventListener("click", function () {
+      setTapMode(tapMode === "ball" ? null : "ball");
+    });
+    ballFindBtn.addEventListener("click", findBallImpact);
+    clubTapBtn.addEventListener("click", function () {
+      setTapMode(tapMode === "club" ? null : "club");
+    });
+    // 이 칸에서도 프레임을 넘길 수 있게 (위쪽 「이전/다음 프레임」과 같은 동작)
+    touchPrevBtn.addEventListener("click", function () { prevFrameBtn.click(); });
+    touchNextBtn.addEventListener("click", function () { nextFrameBtn.click(); });
+    clubUndoBtn.addEventListener("click", function () {
+      // 가장 최근에 찍은 점(seq 가 가장 큰 점)을 지움
+      if (clubPts.length === 0) return;
+      const lastSeq = Math.max.apply(null, clubPts.map(function (p) { return p.seq; }));
+      clubPts = clubPts.filter(function (p) { return p.seq !== lastSeq; });
+      renderTouch();
+      updateTouchButtons();
+    });
+    clubClearBtn.addEventListener("click", function () {
+      clubPts = [];
+      renderTouch();
+      updateTouchButtons();
+    });
+
+    // (19-10) ③ 헤드스피드 · 볼 스피드 · 발사각 · 스매시 팩터
+    //   속도 = 움직인 거리 ÷ 걸린 시간 입니다. 그래서 두 가지가 필요합니다.
+    //   ① 거리: 영상의 1픽셀이 실제 몇 m 인지
+    //      - 내 키로 계산: 어깨→골반→무릎→발목을 이은 길이는 키의 약 78%
+    //        (Winter 의 인체 치수 비율: 어깨 높이 0.818, 발목 높이 0.039 × 키)
+    //      - 몸이 카메라 쪽으로 숙이면 짧아 보이므로, 분석한 장면 중 길게 찍힌 쪽(상위 10%)을 사용
+    //      - 공은 몸보다 카메라에 가까워서 더 크게 찍힙니다. 그래서 "카메라~공 거리"로 보정합니다.
+    //   ② 시간: 슬로모션으로 저장된 영상은 영상 속 시간이 실제보다 길어서 배속으로 나눕니다.
+
+    const heightInput    = document.getElementById("heightInput");
+    const camDistInput   = document.getElementById("camDistInput");
+    const slowmoSelect   = document.getElementById("slowmoSelect");
+    const flightTapBtn   = document.getElementById("flightTapBtn");
+    const flightUndoBtn  = document.getElementById("flightUndoBtn");
+    const flightClearBtn = document.getElementById("flightClearBtn");
+    const speedResult    = document.getElementById("speedResult");
+
+    const SPEED_KEY = "swingAnalyzerSpeedSettings";  // 키·거리·배속을 기억할 때 쓰는 이름
+    let flightPts = [];      // 날아가는 공 점 [{ t, x, y, seq }, ...] (시간 순)
+
+    // 클럽별 대략값: 공 줄(비구선)에서 몸 관절까지 거리(m), 흔히 알려진 스매시 팩터 범위
+    const BODY_OFFSET = { driver: 0.85, wood: 0.8, iron: 0.7, wedge: 0.6 };
+    const SMASH_RANGE = { driver: [1.40, 1.50], wood: [1.35, 1.48], iron: [1.30, 1.40], wedge: [1.10, 1.25] };
+
+    // 키 · 거리 · 배속을 이 브라우저에 기억 (다음에 열 때 다시 입력하지 않도록)
+    function loadSpeedSettings() {
+      try {
+        const s = JSON.parse(localStorage.getItem(SPEED_KEY) || "{}");
+        if (s.height) heightInput.value = s.height;
+        if (s.camDist) camDistInput.value = s.camDist;
+        if (s.slowmo) slowmoSelect.value = s.slowmo;
+      } catch (e) {
+        // 저장소를 못 쓰면 기본값으로
+      }
+    }
+    function saveSpeedSettings() {
+      try {
+        localStorage.setItem(SPEED_KEY, JSON.stringify({
+          height: heightInput.value, camDist: camDistInput.value, slowmo: slowmoSelect.value
+        }));
+      } catch (e) {
+        // 저장 못 해도 계산은 계속
+      }
+    }
+
+    // 어깨→골반→무릎→발목 길이(픽셀). 양쪽 평균, 분석한 장면들 중 상위 10% 값
+    function bodyChainPx() {
+      const lens = [];
+      frames.forEach(function (f, i) {
+        if (!f.lm) return;
+        const one = function (sh, hip, kn, an) {
+          return dist(pt(i, sh), pt(i, hip)) + dist(pt(i, hip), pt(i, kn)) + dist(pt(i, kn), pt(i, an));
+        };
+        lens.push((one(LM.L_SH, LM.L_HIP, LM.L_KN, LM.L_AN) + one(LM.R_SH, LM.R_HIP, LM.R_KN, LM.R_AN)) / 2);
+      });
+      if (lens.length === 0) return null;
+      lens.sort(function (a, b) { return a - b; });
+      return lens[Math.min(lens.length - 1, Math.floor(lens.length * 0.9))];
+    }
+
+    // 점들의 속도(픽셀/영상 1초): 가로·세로 위치를 시간에 대해 직선으로 맞춘 기울기
+    function velocityOf(pts) {
+      const ts = pts.map(function (p) { return p.t; });
+      const vx = fitLine(ts, pts.map(function (p) { return p.x; })).b;
+      const vy = fitLine(ts, pts.map(function (p) { return p.y; })).b;
+      if (vx === null || vy === null) return null;
+      return { vx: vx, vy: vy, px: Math.hypot(vx, vy) };
+    }
+
+    // 초속(m/s) → "42.3 m/s (95 mph · 152 km/h)"
+    function speedText(ms) {
+      return ms.toFixed(1) + " m/s (" + Math.round(ms * 2.23694) + " mph · " + Math.round(ms * 3.6) + " km/h)";
+    }
+
+    // 결과 계산 · 표시 (renderTouch 에서 호출)
+    function renderSpeed() {
+      const lines = [];
+      const heightCm = Number(heightInput.value);
+      const camDist = Number(camDistInput.value);
+      const slowmo = Number(slowmoSelect.value) || 1;
+      const club = clubProfile();
+
+      if (isImage) { speedResult.innerHTML = "사진 한 장으로는 속도를 잴 수 없습니다. 영상을 올려 주세요."; return; }
+      if (!frames.length) { speedResult.innerHTML = "먼저 「자세 분석 시작」을 눌러 주세요. (몸 길이로 거리 기준을 정합니다)"; return; }
+      if (!(heightCm >= 100 && heightCm <= 230)) { speedResult.innerHTML = "「내 키」를 입력하면 계산합니다."; return; }
+      if (!(camDist >= 1)) { speedResult.innerHTML = "「카메라 ~ 공 거리」를 1m 이상으로 입력하세요."; return; }
+
+      const chain = bodyChainPx();
+      if (!chain) { speedResult.innerHTML = "몸 길이를 잴 수 없습니다. 몸 전체가 보이는 영상인지 확인하세요."; return; }
+      const offset = BODY_OFFSET[currentClub] || 0.8;
+      const mPerPxBody = (0.78 * heightCm / 100) / chain;          // 몸 위치에서 1픽셀 = 몇 m
+      const mPerPx = mPerPxBody * camDist / (camDist + offset);    // 공 위치로 보정 (가까울수록 크게 찍힘)
+
+      // 공통 오차: 거리 기준 약 7% + 몸~공 거리 가정 ±15cm
+      const baseErr2 = 0.07 * 0.07 + Math.pow(0.15 / (camDist + offset), 2);
+      const markHead = (phases.address >= 0 ? torsoLength(phases.address) : mediaH * 0.3) * 0.04; // 헤드 점 찍기 오차(px)
+      const markBall = markHead * 0.5;                                                            // 공은 더 작아서 오차도 작게 봄
+      const relErr = function (pts, mark) {
+        const span = Math.hypot(pts[pts.length - 1].x - pts[0].x, pts[pts.length - 1].y - pts[0].y);
+        const m = span > 0 ? Math.SQRT2 * mark / span : 1;
+        return Math.sqrt(baseErr2 + m * m);
+      };
+
+      // ── 헤드스피드: 임팩트 직전 점들 ──
+      const impactT = ballImpactT !== null ? ballImpactT : (phases.impact >= 0 ? frames[phases.impact].t : null);
+      let head = null;
+      if (clubPts.length >= 2) {
+        const pre = clubPts.filter(function (p) { return impactT === null || p.t <= impactT + 0.0005; });
+        const use = pre.length >= 2 ? pre : clubPts;
+        const v = velocityOf(use);
+        if (v) {
+          head = { ms: v.px * slowmo * mPerPx, err: relErr(use, markHead), n: use.length,
+                   spanReal: (use[use.length - 1].t - use[0].t) / slowmo };
+        }
+      }
+      if (head) {
+        lines.push("<b>헤드스피드 약 " + speedText(head.ms) + "</b> <span class=\"muted\">(오차 약 ±" + Math.round(head.err * 100) + "%, 점 " + head.n + "개)</span>");
+        if (head.spanReal > 0.04) lines.push("⚠️ 점 사이 시간이 길어(" + (head.spanReal * 1000).toFixed(0) + "ms) 곡선 구간이 섞였습니다. 실제보다 느리게 나올 수 있으니 임팩트 바로 앞 장면들로 찍어 주세요.");
+        if (head.ms > 70 || head.ms < 10) lines.push("⚠️ 일반적인 범위를 크게 벗어났습니다. 「슬로모션 배속」과 「내 키」를 확인하세요.");
+      } else {
+        lines.push("헤드스피드: ②에서 클럽헤드 점을 2개 이상(임팩트 직전) 찍으면 계산합니다.");
+      }
+
+      // ── 볼 스피드 · 발사각: 임팩트 직후 공 점들 ──
+      let ballRes = null;
+      if (flightPts.length >= 2) {
+        const v = velocityOf(flightPts);
+        if (v) {
+          // 화면 y 는 아래로 커지므로 위로 날아가면 vy 가 음수 → 발사각 = atan(-vy / |vx|)
+          ballRes = { ms: v.px * slowmo * mPerPx, launch: deg(Math.atan2(-v.vy, Math.abs(v.vx))),
+                      err: relErr(flightPts, markBall), n: flightPts.length };
+        }
+      }
+      if (ballRes) {
+        lines.push("<b>볼 스피드 약 " + speedText(ballRes.ms) + "</b> <span class=\"muted\">(오차 약 ±" + Math.round(ballRes.err * 100) + "%, 점 " + ballRes.n + "개)</span>");
+        lines.push("<b>발사각 약 " + ballRes.launch.toFixed(1) + "°</b> <span class=\"muted\">(화면에 보이는 위아래 각도. 공이 카메라 쪽·반대쪽으로 휘어 나가면 틀어집니다)</span>");
+        if (ballRes.ms > 95 || ballRes.ms < 5) lines.push("⚠️ 일반적인 범위를 크게 벗어났습니다. 「슬로모션 배속」과 공 점 위치를 확인하세요.");
+      } else {
+        lines.push("볼 스피드 · 발사각: 「날아가는 공 찍기」로 임팩트 직후 공을 2개 이상 찍으면 계산합니다.");
+      }
+
+      // ── 스매시 팩터 = 볼 스피드 ÷ 헤드스피드 ──
+      if (head && ballRes && head.ms > 0) {
+        const smash = ballRes.ms / head.ms;
+        const range = SMASH_RANGE[currentClub];
+        // 두 속도 모두 같은 거리 기준을 쓰므로, 나누면 거리 기준 오차는 사라지고 점 찍기 오차만 남음
+        const markH2 = Math.max(0, head.err * head.err - baseErr2);
+        const markB2 = Math.max(0, ballRes.err * ballRes.err - baseErr2);
+        const smashErr = Math.sqrt(markH2 + markB2);
+        lines.push("<b>스매시 팩터 약 " + smash.toFixed(2) + "</b> <span class=\"muted\">(오차 약 ±" + Math.round(Math.max(0.03, smashErr) * 100) + "%)</span> — " +
+                   club.name + "에서 흔히 알려진 대략적인 범위는 " + range[0].toFixed(2) + "~" + range[1].toFixed(2) + "입니다. " +
+                   (smash > 1.6 || smash < 0.9 ? "⚠️ 물리적으로 나오기 어려운 값이라 점이나 설정을 다시 확인하세요."
+                     : Number(smash.toFixed(2)) >= range[0] ? "정타에 가깝게 맞은 것으로 보입니다." : "범위보다 낮아 정타에서 벗어났을 수 있습니다."));
+      }
+
+      lines.push("<span class=\"muted\">거리 기준: 1픽셀 ≈ " + (mPerPx * 1000).toFixed(1) + "mm (공 위치, 키 " + heightCm + "cm · 카메라~공 " + camDist + "m · " + club.name + " 기준 몸~공 약 " + offset + "m 가정) · 배속 " + slowmo + "배. " +
+                 "2D 영상에 손으로 찍은 점으로 낸 대략값이며, 론치 모니터만큼 정확하지 않습니다.</span>");
+      speedResult.innerHTML = lines.join("<br>");
+    }
+
+    // 버튼 · 입력칸 연결
+    flightTapBtn.addEventListener("click", function () {
+      setTapMode(tapMode === "flight" ? null : "flight");
+    });
+    flightUndoBtn.addEventListener("click", function () {
+      if (flightPts.length === 0) return;
+      const lastSeq = Math.max.apply(null, flightPts.map(function (p) { return p.seq; }));
+      flightPts = flightPts.filter(function (p) { return p.seq !== lastSeq; });
+      renderTouch();
+      updateTouchButtons();
+    });
+    flightClearBtn.addEventListener("click", function () {
+      flightPts = [];
+      renderTouch();
+      updateTouchButtons();
+    });
+    [heightInput, camDistInput, slowmoSelect].forEach(function (el) {
+      el.addEventListener("change", function () { saveSpeedSettings(); renderTouch(); });
+    });
+    loadSpeedSettings();
+
+    // ----------------------------------------------------------
+    // [20] 분석할 클럽 고르기
+    // ----------------------------------------------------------
+    // 맨 위의 클럽 버튼을 누르면 그 클럽에 맞는 기준으로 모든 표를 다시 계산합니다.
+    // (관절 위치는 그대로이고, 참고 범위·진단 기준·구질 원인·어택 앵글 평가만 바뀝니다)
+
+    const clubButtons = document.getElementById("clubButtons");
+    const clubTip     = document.getElementById("clubTip");
+    const appTitle    = document.getElementById("appTitle");
+
+    // (20-1) 마지막으로 고른 클럽 불러오기 (없으면 드라이버)
+    function loadClub() {
+      try {
+        const saved = localStorage.getItem(CLUB_KEY);
+        if (saved && CLUB_PROFILES[saved]) return saved;
+      } catch (e) {
+        // 저장소를 못 쓰면 드라이버로 시작
+      }
+      return "driver";
+    }
+
+    // 지금 고른 클럽의 기준값
+    function clubProfile() { return CLUB_PROFILES[currentClub]; }
+
+    // 프로 비교 · 각도 표에 쓰는 고른 클럽의 백스윙 탑 참고 범위
+    function proRef() { return CLUB_PROFILES[currentClub].proRef; }
+
+    // (20-2) 버튼 모양 · 제목 · 준비 자세 안내를 고른 클럽에 맞게
+    function applyClub() {
+      const club = clubProfile();
+      clubButtons.querySelectorAll("button").forEach(function (b) {
+        b.setAttribute("aria-pressed", b.dataset.club === currentClub ? "true" : "false");
+      });
+      appTitle.textContent = "🏌️ " + club.name + " 스윙 분석기";
+      clubTip.textContent = club.name + " 준비 자세: " + club.setup + " · 어택 앵글: " + club.attackText + ".";
+    }
+
+    // (20-3) 클럽 버튼을 누르면
+    clubButtons.addEventListener("click", function (e) {
+      const b = e.target.closest("button[data-club]");
+      if (!b || b.dataset.club === currentClub) return;
+      currentClub = b.dataset.club;
+      try { localStorage.setItem(CLUB_KEY, currentClub); } catch (err) { /* 저장 못 해도 계속 */ }
+      applyClub();
+      renderAll();   // 모든 표를 새 기준으로 다시 그림
+    });
+
+    // ----------------------------------------------------------
+    // [21] 프로그램 시작
+    // ----------------------------------------------------------
+    // 프로 선수 목록 채우기
+    PROS.forEach(function (p) {
+      const option = document.createElement("option");
+      option.value = p.id;
+      option.textContent = p.name;
+      proSelect.appendChild(option);
+    });
+    applyClub();          // 고른 클럽 표시 (제목 · 버튼 · 준비 자세 안내)
+    renderViewNotice();   // 촬영 방향 안내문
+    renderAll();          // 빈 표 그리기
+    renderHistory();      // 저장된 스윙 기록 표 그리기
+    connectCloudHistory(); // 내 계정 전용 기록 저장소 연결 (가능할 때만)
+    drawLoop();          // 뼈대 그리기 반복 시작
+    // 휴대폰(손가락으로 누르는 화면)에서는 처음 모델을 가벼운 lite 로 (언제든 바꿀 수 있음)
+    if (window.matchMedia && window.matchMedia("(pointer: coarse)").matches) modelSelect.value = "lite";
+    loadLibrary();        // 라이브러리 불러오기 (처음에는 내려받느라 시간이 좀 걸림)
+
+    // 서비스 워커 등록: 한 번 연 파일을 휴대폰에 저장해 두어 다음부터는 인터넷 없이도 열리게 합니다.
+    // (https 주소나 localhost 에서만 동작. 파일을 더블클릭해 연 경우에는 조용히 건너뜀)
+    if ("serviceWorker" in navigator && (location.protocol === "https:" || location.hostname === "localhost")) {
+      navigator.serviceWorker.register("sw.js").catch(function (e) { console.warn("서비스 워커 등록 실패", e); });
+    }
+
+    // (개발/테스트용) 브라우저 콘솔에서 상태를 확인할 수 있게 열어 둠
+    window.swingAnalyzer = {
+      get frames() { return frames; },
+      get phases() { return phases; },
+      computeMetrics: computeMetrics,
+      openFile: openFile
+    };
+  </script>
+</body>
+</html>
